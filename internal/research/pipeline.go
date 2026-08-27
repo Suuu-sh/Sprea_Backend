@@ -7,12 +7,14 @@ import (
 )
 
 type RunResult struct {
-	Accepted      int           `json:"accepted"`
-	Rejected      int           `json:"rejected"`
-	Opportunities []Opportunity `json:"opportunities"`
-	Opened        []PaperTrade  `json:"openedTrades"`
-	Evaluations   []Evaluation  `json:"evaluations"`
-	Portfolio     Portfolio     `json:"portfolio"`
+	Accepted      int                `json:"accepted"`
+	Rejected      int                `json:"rejected"`
+	Opportunities []Opportunity      `json:"opportunities"`
+	Decisions     []ResearchDecision `json:"decisions"`
+	Opened        []PaperTrade       `json:"openedTrades"`
+	Evaluations   []Evaluation       `json:"evaluations"`
+	Portfolio     Portfolio          `json:"portfolio"`
+	Metrics       StrategyMetrics    `json:"ruleMetrics48h"`
 }
 
 type Pipeline struct {
@@ -54,6 +56,10 @@ func (p Pipeline) Run(ctx context.Context, observations []Observation, now time.
 	if err := p.Store.SaveOpportunities(ctx, opportunities); err != nil {
 		return RunResult{}, err
 	}
+	decisions, err := p.Store.SaveDecisions(ctx, opportunities, p.MinimumProfit, p.MinimumConfidence)
+	if err != nil {
+		return RunResult{}, err
+	}
 	opened, err := p.Store.OpenTrades(ctx, opportunities, p.InitialCapital, p.MinimumProfit, p.MinimumConfidence)
 	if err != nil {
 		return RunResult{}, err
@@ -62,9 +68,18 @@ func (p Pipeline) Run(ctx context.Context, observations []Observation, now time.
 	if err != nil {
 		return RunResult{}, err
 	}
+	decisionEvaluations, err := p.Store.EvaluateDecisions(ctx, now, p.MinimumProfit)
+	if err != nil {
+		return RunResult{}, err
+	}
+	evaluations = append(evaluations, decisionEvaluations...)
 	portfolio, err := p.Store.Portfolio(ctx, p.InitialCapital)
 	if err != nil {
 		return RunResult{}, err
 	}
-	return RunResult{Accepted: len(resolved), Rejected: rejected, Opportunities: opportunities, Opened: opened, Evaluations: evaluations, Portfolio: portfolio}, nil
+	metrics, err := p.Store.StrategyMetrics(ctx, "rule-v1", 48)
+	if err != nil {
+		return RunResult{}, err
+	}
+	return RunResult{Accepted: len(resolved), Rejected: rejected, Opportunities: opportunities, Decisions: decisions, Opened: opened, Evaluations: evaluations, Portfolio: portfolio, Metrics: metrics}, nil
 }

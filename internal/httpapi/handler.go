@@ -7,6 +7,7 @@ import (
 	buybackcsv "github.com/yota/sprea/backend/internal/collector/csv"
 	"github.com/yota/sprea/backend/internal/domain"
 	"github.com/yota/sprea/backend/internal/port"
+	"github.com/yota/sprea/backend/internal/research"
 	"github.com/yota/sprea/backend/internal/service"
 	"net/http"
 	"strconv"
@@ -18,10 +19,15 @@ type Handler struct {
 	market    port.MarketRepository
 	repo      port.OpportunityRepository
 	ingestKey string
+	research  *research.Store
 }
 
-func New(s *service.Opportunities, repo port.OpportunityRepository, market port.MarketRepository, ingestKey string) http.Handler {
-	h := &Handler{service: s, repo: repo, market: market, ingestKey: ingestKey}
+func New(s *service.Opportunities, repo port.OpportunityRepository, market port.MarketRepository, ingestKey string, researchStore ...*research.Store) http.Handler {
+	var rs *research.Store
+	if len(researchStore) > 0 {
+		rs = researchStore[0]
+	}
+	h := &Handler{service: s, repo: repo, market: market, ingestKey: ingestKey, research: rs}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -38,7 +44,64 @@ func New(s *service.Opportunities, repo port.OpportunityRepository, market port.
 	mux.HandleFunc("POST /api/collector/runs", h.recordCollectorRun)
 	mux.HandleFunc("POST /api/ingest", h.ingest)
 	mux.HandleFunc("POST /api/import/buybacks.csv", h.importBuybacksCSV)
+	mux.HandleFunc("GET /api/research/portfolio", h.researchPortfolio)
+	mux.HandleFunc("GET /api/research/metrics", h.researchMetrics)
+	mux.HandleFunc("POST /api/research/reality", h.recordReality)
 	return cors(mux)
+}
+
+func (h *Handler) researchPortfolio(w http.ResponseWriter, r *http.Request) {
+	if h.research == nil {
+		writeJSON(w, 503, map[string]string{"error": "research store unavailable"})
+		return
+	}
+	x, err := h.research.Portfolio(r.Context(), 300000)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) researchMetrics(w http.ResponseWriter, r *http.Request) {
+	if h.research == nil {
+		writeJSON(w, 503, map[string]string{"error": "research store unavailable"})
+		return
+	}
+	horizon, _ := strconv.Atoi(r.URL.Query().Get("horizon"))
+	if horizon == 0 {
+		horizon = 48
+	}
+	if horizon != 24 && horizon != 48 && horizon != 72 && horizon != 168 {
+		writeJSON(w, 400, map[string]string{"error": "horizon must be 24, 48, 72, or 168"})
+		return
+	}
+	x, err := h.research.StrategyMetrics(r.Context(), "rule-v1", horizon)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) recordReality(w http.ResponseWriter, r *http.Request) {
+	if h.research == nil {
+		writeJSON(w, 503, map[string]string{"error": "research store unavailable"})
+		return
+	}
+	var x research.RealityCalibration
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&x); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	if strings.TrimSpace(x.CanonicalKey) == "" || x.ActualPurchasePrice < 0 || x.ActualPayout < 0 || x.ActualCosts < 0 {
+		writeJSON(w, 400, map[string]string{"error": "invalid reality calibration"})
+		return
+	}
+	saved, err := h.research.RecordRealityCalibration(r.Context(), x)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 201, saved)
 }
 func (h *Handler) notifications(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))

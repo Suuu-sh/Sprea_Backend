@@ -5,6 +5,7 @@ import (
 	"github.com/yota/sprea/backend/internal/collector"
 	"github.com/yota/sprea/backend/internal/httpapi"
 	"github.com/yota/sprea/backend/internal/repository"
+	"github.com/yota/sprea/backend/internal/research"
 	"github.com/yota/sprea/backend/internal/service"
 	"log"
 	"net/http"
@@ -21,6 +22,11 @@ func main() {
 		log.Fatal(err)
 	}
 	defer repo.Close()
+	researchStore, err := research.Open(filepath.Join("data", "sprea-research.db"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer researchStore.Close()
 	items, err := repo.List(context.Background())
 	if err != nil {
 		log.Fatal(err)
@@ -43,5 +49,5 @@ func main() {
 	}
 	addr := ":8080"
 	log.Printf("Sprea API listening on http://localhost%s", addr)
-	log.Fatal(http.ListenAndServe(addr, httpapi.New(service.New(repo), repo, repo, os.Getenv("SPREA_INGEST_API_KEY"))))
+	log.Fatal(http.ListenAndServe(addr, httpapi.New(service.New(repo), repo, repo, os.Getenv("SPREA_INGEST_API_KEY"), researchStore)))
 }

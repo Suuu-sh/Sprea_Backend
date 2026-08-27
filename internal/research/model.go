@@ -49,7 +49,37 @@ type Opportunity struct {
 	MarketProfit       int       `json:"marketProfit"`
 	ProfitRate         float64   `json:"profitRate"`
 	ResolverConfidence float64   `json:"resolverConfidence"`
+	BuybackStoreCount  int       `json:"buybackStoreCount"`
+	SecondBuybackPrice int       `json:"secondBuybackPrice"`
+	TopTwoSpreadRate   float64   `json:"topTwoSpreadRate"`
+	CapitalDays        int       `json:"capitalDays"`
+	AnnualizedReturn   float64   `json:"annualizedReturn"`
+	Return30Days       float64   `json:"return30Days"`
+	SpreaScore         int       `json:"spreaScore"`
 	DetectedAt         time.Time `json:"detectedAt"`
+}
+
+type Decision string
+
+const (
+	DecisionBuy  Decision = "buy"
+	DecisionSkip Decision = "skip"
+)
+
+type ResearchDecision struct {
+	ID               int64     `json:"id"`
+	CanonicalKey     string    `json:"canonicalKey"`
+	Title            string    `json:"title"`
+	Decision         Decision  `json:"decision"`
+	Reason           string    `json:"reason"`
+	Strategy         string    `json:"strategy"`
+	PurchasePrice    int       `json:"purchasePrice"`
+	PurchaseShipping int       `json:"purchaseShipping"`
+	SaleShipping     int       `json:"saleShipping"`
+	Fees             int       `json:"fees"`
+	EntryProfit      int       `json:"entryProfit"`
+	SpreaScore       int       `json:"spreaScore"`
+	DecidedAt        time.Time `json:"decidedAt"`
 }
 
 type PaperTrade struct {
@@ -69,11 +99,65 @@ type PaperTrade struct {
 
 type Evaluation struct {
 	TradeID      int64     `json:"tradeId"`
+	DecisionID   int64     `json:"decisionId,omitempty"`
 	HorizonHours int       `json:"horizonHours"`
 	BuybackPrice int       `json:"buybackPrice"`
 	Profit       int       `json:"profit"`
 	TargetMet    bool      `json:"targetMet"`
+	Outcome      string    `json:"outcome,omitempty"`
 	EvaluatedAt  time.Time `json:"evaluatedAt"`
+}
+
+type RealityCalibration struct {
+	ID                  int64     `json:"id"`
+	CanonicalKey        string    `json:"canonicalKey"`
+	PurchaseSource      string    `json:"purchaseSource"`
+	BuybackSource       string    `json:"buybackSource"`
+	PredictedProfit     int       `json:"predictedProfit"`
+	ActualPurchasePrice int       `json:"actualPurchasePrice"`
+	ActualPayout        int       `json:"actualPayout"`
+	ActualCosts         int       `json:"actualCosts"`
+	ActualProfit        int       `json:"actualProfit"`
+	Slippage            int       `json:"slippage"`
+	DeliveryDays        float64   `json:"deliveryDays"`
+	ReductionReason     string    `json:"reductionReason"`
+	RecordedAt          time.Time `json:"recordedAt"`
+}
+
+type StrategyMetrics struct {
+	Strategy            string  `json:"strategy"`
+	HorizonHours        int     `json:"horizonHours"`
+	Evaluated           int     `json:"evaluated"`
+	BuyCount            int     `json:"buyCount"`
+	Precision           float64 `json:"precision"`
+	Recall              float64 `json:"recall"`
+	MissedOpportunities int     `json:"missedOpportunities"`
+	AverageProfit       float64 `json:"averageProfit"`
+	MaximumLoss         int     `json:"maximumLoss"`
+}
+
+type ModelExperiment struct {
+	ID               int64     `json:"id"`
+	Name             string    `json:"name"`
+	CandidateVersion string    `json:"candidateVersion"`
+	BaselineVersion  string    `json:"baselineVersion"`
+	DatasetCutoff    time.Time `json:"datasetCutoff"`
+	Precision        float64   `json:"precision"`
+	Recall           float64   `json:"recall"`
+	AverageProfit    float64   `json:"averageProfit"`
+	MaximumLoss      int       `json:"maximumLoss"`
+	Promoted         bool      `json:"promoted"`
+	CreatedAt        time.Time `json:"createdAt"`
+}
+
+type SourcePolicy struct {
+	Source     string    `json:"source"`
+	Method     string    `json:"method"`
+	TermsURL   string    `json:"termsUrl"`
+	RobotsURL  string    `json:"robotsUrl"`
+	Status     string    `json:"status"`
+	ReviewedAt time.Time `json:"reviewedAt"`
+	Notes      string    `json:"notes"`
 }
 
 type Portfolio struct {
