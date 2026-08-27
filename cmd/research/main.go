@@ -100,7 +100,11 @@ func readCSV(path string) ([]research.Observation, error) {
 			return nil, fmt.Errorf("row %d side must be purchase or buyback", n+2)
 		}
 		stock := strings.ToLower(get(r, "stock")) != "false"
-		out = append(out, research.Observation{Source: get(r, "source"), Side: side, SourceProductID: get(r, "source_product_id"), Title: get(r, "title"), Price: price, Shipping: shipping, Stock: stock, Condition: get(r, "condition"), JAN: get(r, "jan"), Model: get(r, "model"), Capacity: get(r, "capacity"), Color: get(r, "color"), CapturedAt: captured})
+		raw := map[string]any{"import": "manual_csv"}
+		if sourceURL := get(r, "source_url"); sourceURL != "" {
+			raw["source_url"] = sourceURL
+		}
+		out = append(out, research.Observation{Source: get(r, "source"), Side: side, SourceProductID: get(r, "source_product_id"), Title: get(r, "title"), Price: price, Shipping: shipping, Stock: stock, Condition: get(r, "condition"), JAN: get(r, "jan"), Model: get(r, "model"), Capacity: get(r, "capacity"), Color: get(r, "color"), CapturedAt: captured, Raw: raw})
 	}
 	return out, nil
 }

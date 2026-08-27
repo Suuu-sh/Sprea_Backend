@@ -57,7 +57,7 @@ go run ./cmd/research
 go run ./cmd/research -input examples/apple_observations.csv
 ```
 
-デモが実データを汚さないよう、CLIの既定保存先は `backend/data/sprea-research-demo.db` です。実運用では `-db data/sprea-research.db -input ...` を明示します。CSV の列は `source, side, source_product_id, title, price, shipping, stock, condition, jan, model, capacity, color, captured_at` です。
+デモが実データを汚さないよう、CLIの既定保存先は `backend/data/sprea-research-demo.db` です。実運用では `-db data/sprea-research.db -input ...` を明示します。CSV の列は `source, side, source_product_id, title, price, shipping, stock, condition, jan, model, capacity, color, captured_at, source_url` です。実データでは監査できるよう取得元URLを必ず残します。
 
 ## 次の実装順
 
