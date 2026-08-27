@@ -43,7 +43,7 @@ func TestCollectorRunUpsertAndLatest(t *testing.T) {
 	}
 	defer repo.Close()
 	ctx := context.Background()
-	run := domain.CollectorRun{RunID: "run-1", Source: "mock", Status: "running", StartedAt: "2026-01-01T00:00:00Z"}
+	run := domain.CollectorRun{RunID: "run-1", Source: "test-source", Status: "running", StartedAt: "2026-01-01T00:00:00Z"}
 	if err := repo.RecordCollectorRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}

@@ -13,10 +13,10 @@ set -a; source .env; set +a
 go run ./cmd/api
 ```
 
-Collectorの安全な確認:
+Collectorの安全な確認（実データを送信しないdry-run）:
 
 ```bash
-SPREA_COLLECTOR_MODE=mock SPREA_DRY_RUN=true go run ./cmd/collector
+SPREA_COLLECTOR_MODE=live SPREA_DRY_RUN=true go run ./cmd/collector
 ```
 
 Research v1 のローカル縦切り:

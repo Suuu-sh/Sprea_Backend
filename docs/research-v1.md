@@ -44,20 +44,14 @@ robots.txt は許可証ではありません。robots.txt が許可していて�
 
 ## ローカル実行
 
-デモデータで縦切りを一度動かします。
+取得元URLを含む実データCSVで縦切りを動かします。モック・デモデータは受け付けません。
 
 ```bash
 cd backend
-go run ./cmd/research
+go run ./cmd/research -db data/sprea-research.db -input /path/to/live_observations.csv
 ```
 
-手動 CSV を使う場合:
-
-```bash
-go run ./cmd/research -input examples/apple_observations.csv
-```
-
-デモが実データを汚さないよう、CLIの既定保存先は `backend/data/sprea-research-demo.db` です。実運用では `-db data/sprea-research.db -input ...` を明示します。CSV の列は `source, side, source_product_id, title, price, shipping, stock, condition, jan, model, capacity, color, captured_at, source_url` です。実データでは監査できるよう取得元URLを必ず残します。
+保存先の既定値は `backend/data/sprea-research.db` です。`-input` は必須です。CSV の列は `source, side, source_product_id, title, price, shipping, stock, condition, jan, model, capacity, color, captured_at, source_url` です。監査できるよう取得元URLを必ず残します。
 
 ## 次の実装順
 

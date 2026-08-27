@@ -19,14 +19,14 @@ import (
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	var source port.Collector = collector.Mock{}
-	if strings.EqualFold(os.Getenv("SPREA_COLLECTOR_MODE"), "live") {
-		c, err := rakuten.NewFromEnv()
-		if err != nil {
-			log.Fatal(err)
-		}
-		source = c
+	if !strings.EqualFold(os.Getenv("SPREA_COLLECTOR_MODE"), "live") {
+		log.Fatal("SPREA_COLLECTOR_MODE must be live; mock data is not supported")
 	}
+	c, err := rakuten.NewFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	var source port.Collector = c
 	if path := strings.TrimSpace(os.Getenv("SPREA_BUYBACK_CSV")); path != "" {
 		offers, err := buybackcsv.ReadFile(path)
 		if err != nil {

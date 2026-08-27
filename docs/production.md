@@ -78,17 +78,17 @@ GitHub repository settingsで以下を登録します。
 
 | 名前 | 初期値 | 用途 |
 |---|---:|---|
-| `SPREA_COLLECTOR_MODE` | `mock` | `mock` または `live` |
+| `SPREA_COLLECTOR_MODE` | `live` | 実データ取得のみ |
 | `SPREA_ENABLE_PRODUCTION_INGEST` | `false` | `true` のときだけ定期実行から送信 |
 
-`.github/workflows/collector.yml` は毎時17分に起動します。初期状態では定期実行が必ずdry-runになるため、本番DBを誤ってモックで上書きしません。まず手動実行で `mode=mock`, `dry_run=true` を確認し、その後API資格情報を設定して `mode=live`, `dry_run=true`、最後に `dry_run=false` の順で確認します。定期送信を有効にするときだけ上記variablesを `live` / `true` に変更します。
+`.github/workflows/collector.yml` は毎時17分に実データCollectorを起動します。初期状態では定期実行がdry-runになるため、まずAPI資格情報を設定して `dry_run=true` で確認し、最後に `dry_run=false` にします。
 
 Collectorが読む環境変数は次の通りです。
 
 ```text
 SPREA_API_URL
 SPREA_INGEST_API_KEY
-SPREA_COLLECTOR_MODE=mock|live
+SPREA_COLLECTOR_MODE=live
 SPREA_DRY_RUN=true|false
 RAKUTEN_APPLICATION_ID
 RAKUTEN_AFFILIATE_ID
@@ -98,7 +98,7 @@ RAKUTEN_AFFILIATE_ID
 
 1. Workerの `ALLOWED_ORIGIN` を本番Pages URLへ限定する
 2. 収集キーをGitHub SecretsとWorker Secretにだけ保存する
-3. D1のデモデータが不要なら削除する
+3. D1に実データ以外が入っていないことを確認する
 4. 認証を導入し、クライアント指定の `X-User-ID` を信用しない
 5. 楽天・各買取先のAPI規約、レート制限、表示義務を確認する
 6. GitHub Actionsのdry-runログに秘密値や取得データが出ないことを確認する

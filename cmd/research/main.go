@@ -16,9 +16,12 @@ import (
 )
 
 func main() {
-	db := flag.String("db", "data/sprea-research-demo.db", "SQLite database path")
-	input := flag.String("input", "", "optional observation CSV")
+	db := flag.String("db", "data/sprea-research.db", "SQLite database path")
+	input := flag.String("input", "", "observation CSV containing real source data")
 	flag.Parse()
+	if strings.TrimSpace(*input) == "" {
+		log.Fatal("-input is required; mock/demo observations are not supported")
+	}
 	store, err := research.Open(*db)
 	if err != nil {
 		log.Fatal(err)
@@ -34,12 +37,9 @@ func main() {
 		}
 	}
 	now := time.Now().UTC()
-	observations := demo(now)
-	if *input != "" {
-		observations, err = readCSV(*input)
-		if err != nil {
-			log.Fatal(err)
-		}
+	observations, err := readCSV(*input)
+	if err != nil {
+		log.Fatal(err)
 	}
 	p := research.Pipeline{Store: store, InitialCapital: 300000, MinimumProfit: 5000, MinimumConfidence: .95, SaleShipping: 1000}
 	result, err := p.Run(context.Background(), observations, now)
@@ -48,13 +48,6 @@ func main() {
 	}
 	b, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(b))
-}
-
-func demo(now time.Time) []research.Observation {
-	return []research.Observation{
-		{Source: "demo-sale-csv", Side: research.Purchase, SourceProductID: "iphone17pro-256-silver", Title: "Apple iPhone 17 Pro 256GB Silver", Price: 179800, Stock: true, Condition: "new", Model: "A3523", Capacity: "256GB", Color: "silver", CapturedAt: now, Raw: map[string]any{"demo": true}},
-		{Source: "demo-buyback-csv", Side: research.Buyback, SourceProductID: "iphone17pro-256-silver", Title: "iPhone 17 Pro 256GB Silver 新品", Price: 188000, Stock: true, Condition: "新品", Model: "A3523", Capacity: "256GB", Color: "silver", CapturedAt: now, Raw: map[string]any{"demo": true}},
-	}
 }
 
 func readCSV(path string) ([]research.Observation, error) {

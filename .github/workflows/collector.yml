@@ -5,12 +5,6 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
-      mode:
-        description: "Data source (mock is safe for verification)"
-        required: true
-        default: mock
-        type: choice
-        options: [mock, live]
       dry_run:
         description: "Collect and validate without sending data"
         required: true
@@ -36,7 +30,7 @@ jobs:
       SPREA_INGEST_API_KEY: ${{ secrets.SPREA_INGEST_API_KEY }}
       # Scheduled runs remain dry until the repository variable is explicitly set to true.
       SPREA_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.event_name != 'workflow_dispatch' && vars.SPREA_ENABLE_PRODUCTION_INGEST != 'true') }}
-      SPREA_COLLECTOR_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || vars.SPREA_COLLECTOR_MODE || 'mock' }}
+      SPREA_COLLECTOR_MODE: live
       RAKUTEN_APPLICATION_ID: ${{ secrets.RAKUTEN_APPLICATION_ID }}
       RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
       RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
