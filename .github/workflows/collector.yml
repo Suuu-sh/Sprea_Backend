@@ -31,6 +31,7 @@ jobs:
       # Scheduled runs remain dry until the repository variable is explicitly set to true.
       SPREA_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.event_name != 'workflow_dispatch' && vars.SPREA_ENABLE_PRODUCTION_INGEST != 'true') }}
       SPREA_COLLECTOR_MODE: live
+      SPREA_ENV: production
       RAKUTEN_APPLICATION_ID: ${{ secrets.RAKUTEN_APPLICATION_ID }}
       RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
       RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}

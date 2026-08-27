@@ -13,11 +13,13 @@ set -a; source .env; set +a
 go run ./cmd/api
 ```
 
-Collectorの安全な確認（実データを送信しないdry-run）:
+ローカルCollectorはネットワークへ接続せず、明示的なモックデータだけを使います:
 
 ```bash
-SPREA_COLLECTOR_MODE=live SPREA_DRY_RUN=true go run ./cmd/collector
+SPREA_ENV=local SPREA_COLLECTOR_MODE=mock SPREA_DRY_RUN=true go run ./cmd/collector
 ```
+
+本番だけ `SPREA_ENV=production` と `SPREA_COLLECTOR_MODE=live` を設定し、公式APIの実データを取得します。環境とモードが食い違う場合は安全のため起動に失敗します。
 
 Research v1 のローカル縦切り:
 

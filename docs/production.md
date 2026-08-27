@@ -78,7 +78,8 @@ GitHub repository settingsで以下を登録します。
 
 | 名前 | 初期値 | 用途 |
 |---|---:|---|
-| `SPREA_COLLECTOR_MODE` | `live` | 実データ取得のみ |
+| `SPREA_ENV` | `production` | 本番ガード。ローカルとの混在を防止 |
+| `SPREA_COLLECTOR_MODE` | `live` | 本番では実データ取得のみ。`mock` は拒否 |
 | `SPREA_ENABLE_PRODUCTION_INGEST` | `false` | `true` のときだけ定期実行から送信 |
 
 `.github/workflows/collector.yml` は毎時17分に実データCollectorを起動します。初期状態では定期実行がdry-runになるため、まずAPI資格情報を設定して `dry_run=true` で確認し、最後に `dry_run=false` にします。
@@ -88,6 +89,7 @@ Collectorが読む環境変数は次の通りです。
 ```text
 SPREA_API_URL
 SPREA_INGEST_API_KEY
+SPREA_ENV=production
 SPREA_COLLECTOR_MODE=live
 SPREA_DRY_RUN=true|false
 RAKUTEN_APPLICATION_ID

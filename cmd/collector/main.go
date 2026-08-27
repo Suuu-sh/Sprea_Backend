@@ -19,20 +19,9 @@ import (
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if !strings.EqualFold(os.Getenv("SPREA_COLLECTOR_MODE"), "live") {
-		log.Fatal("SPREA_COLLECTOR_MODE must be live; mock data is not supported")
-	}
-	c, err := rakuten.NewFromEnv()
+	source, err := collectorForEnvironment()
 	if err != nil {
 		log.Fatal(err)
-	}
-	var source port.Collector = c
-	if path := strings.TrimSpace(os.Getenv("SPREA_BUYBACK_CSV")); path != "" {
-		offers, err := buybackcsv.ReadFile(path)
-		if err != nil {
-			log.Fatal(err)
-		}
-		source = collector.Matched{Purchases: source, Buybacks: offers}
 	}
 	items, err := source.Collect(ctx)
 	if err != nil {
@@ -67,4 +56,41 @@ func main() {
 		log.Fatal(fmt.Errorf("ingest failed: %s", resp.Status))
 	}
 	log.Printf("ingested %d opportunities", len(items))
+}
+
+func collectorForEnvironment() (port.Collector, error) {
+	environment := strings.ToLower(strings.TrimSpace(os.Getenv("SPREA_ENV")))
+	if environment == "" {
+		environment = "local"
+	}
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("SPREA_COLLECTOR_MODE")))
+	if mode == "" {
+		if environment == "production" {
+			mode = "live"
+		} else {
+			mode = "mock"
+		}
+	}
+	if environment == "production" && mode != "live" {
+		return nil, fmt.Errorf("production requires SPREA_COLLECTOR_MODE=live")
+	}
+	if environment != "production" {
+		if mode != "mock" {
+			return nil, fmt.Errorf("local development requires SPREA_COLLECTOR_MODE=mock")
+		}
+		return collector.Mock{}, nil
+	}
+	c, err := rakuten.NewFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	var source port.Collector = c
+	if path := strings.TrimSpace(os.Getenv("SPREA_BUYBACK_CSV")); path != "" {
+		offers, err := buybackcsv.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		source = collector.Matched{Purchases: source, Buybacks: offers}
+	}
+	return source, nil
 }
