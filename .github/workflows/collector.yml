@@ -1,0 +1,49 @@
+name: Collect prices
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Data source (mock is safe for verification)"
+        required: true
+        default: mock
+        type: choice
+        options: [mock, live]
+      dry_run:
+        description: "Collect and validate without sending data"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sprea-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SPREA_API_URL: ${{ secrets.SPREA_API_URL }}
+      SPREA_INGEST_API_KEY: ${{ secrets.SPREA_INGEST_API_KEY }}
+      # Scheduled runs remain dry until the repository variable is explicitly set to true.
+      SPREA_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.event_name != 'workflow_dispatch' && vars.SPREA_ENABLE_PRODUCTION_INGEST != 'true') }}
+      SPREA_COLLECTOR_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || vars.SPREA_COLLECTOR_MODE || 'mock' }}
+      RAKUTEN_APPLICATION_ID: ${{ secrets.RAKUTEN_APPLICATION_ID }}
+      RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+      RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Test backend
+        run: go test ./...
+      - name: Run collector
+        run: go run ./cmd/collector
