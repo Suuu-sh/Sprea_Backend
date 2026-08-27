@@ -3,9 +3,11 @@ package httpapi
 import (
 	"database/sql"
 	"encoding/json"
-	"github.com/Suuu-sh/Sprea_Backend/internal/domain"
-	"github.com/Suuu-sh/Sprea_Backend/internal/port"
-	"github.com/Suuu-sh/Sprea_Backend/internal/service"
+	"github.com/yota/sprea/backend/internal/collector"
+	buybackcsv "github.com/yota/sprea/backend/internal/collector/csv"
+	"github.com/yota/sprea/backend/internal/domain"
+	"github.com/yota/sprea/backend/internal/port"
+	"github.com/yota/sprea/backend/internal/service"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,8 +33,55 @@ func New(s *service.Opportunities, repo port.OpportunityRepository, market port.
 	mux.HandleFunc("PUT /api/settings", h.saveSettings)
 	mux.HandleFunc("GET /api/alerts", h.listAlerts)
 	mux.HandleFunc("POST /api/alerts", h.createAlert)
+	mux.HandleFunc("GET /api/notifications", h.notifications)
+	mux.HandleFunc("GET /api/collector/status", h.collectorStatus)
+	mux.HandleFunc("POST /api/collector/runs", h.recordCollectorRun)
 	mux.HandleFunc("POST /api/ingest", h.ingest)
+	mux.HandleFunc("POST /api/import/buybacks.csv", h.importBuybacksCSV)
 	return cors(mux)
+}
+func (h *Handler) notifications(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.market.ListNotifications(r.Context(), userID(r), limit)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (h *Handler) collectorStatus(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.market.ListCollectorRuns(r.Context(), limit)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"lastRun": func() any {
+		if len(items) > 0 {
+			return items[0]
+		}
+		return nil
+	}(), "runs": items})
+}
+func (h *Handler) recordCollectorRun(w http.ResponseWriter, r *http.Request) {
+	if h.ingestKey == "" || r.Header.Get("Authorization") != "Bearer "+h.ingestKey {
+		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var x domain.CollectorRun
+	if err := json.NewDecoder(r.Body).Decode(&x); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	if strings.TrimSpace(x.RunID) == "" || strings.TrimSpace(x.Source) == "" || (x.Status != "running" && x.Status != "succeeded" && x.Status != "failed") || x.ItemCount < 0 || len(x.Message) > 1000 {
+		writeJSON(w, 400, map[string]string{"error": "invalid collector run"})
+		return
+	}
+	if err := h.market.RecordCollectorRun(r.Context(), x); err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 202, x)
 }
 func userID(r *http.Request) string {
 	if v := r.Header.Get("X-User-ID"); v != "" {
@@ -105,6 +154,43 @@ func (h *Handler) createAlert(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 201, saved)
 }
+
+func (h *Handler) importBuybacksCSV(w http.ResponseWriter, r *http.Request) {
+	if h.ingestKey != "" && r.Header.Get("Authorization") != "Bearer "+h.ingestKey {
+		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	offers, err := buybackcsv.Read(http.MaxBytesReader(w, r.Body, 2<<20))
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	items, err := h.repo.List(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	updated := collector.MatchOpportunities(items, offers, .8)
+	matched := 0
+	for i := range updated {
+		if updated[i].BuybackPrice != items[i].BuybackPrice || updated[i].Buyer != items[i].Buyer {
+			matched++
+		}
+	}
+	if err = h.repo.ReplaceAll(r.Context(), updated); err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	saved, err := h.repo.List(r.Context())
+	if err == nil {
+		err = h.market.RecordSnapshots(r.Context(), saved)
+	}
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]int{"offers": len(offers), "matched": matched})
+}
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 	if h.ingestKey != "" && r.Header.Get("Authorization") != "Bearer "+h.ingestKey {
 		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
@@ -127,11 +213,15 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = h.market.RecordSnapshots(r.Context(), saved)
 	}
+	created := 0
+	if err == nil {
+		created, err = h.market.EvaluateNotifications(r.Context(), saved)
+	}
 	if err != nil {
 		writeError(w, 500, err)
 		return
 	}
-	writeJSON(w, 202, map[string]int{"accepted": len(items)})
+	writeJSON(w, 202, map[string]int{"accepted": len(items), "notificationsCreated": created})
 }
 func adjustment(r *http.Request) int {
 	v, _ := strconv.Atoi(r.URL.Query().Get("pointAdjustment"))

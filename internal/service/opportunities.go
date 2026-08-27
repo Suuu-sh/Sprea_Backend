@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
-	"github.com/Suuu-sh/Sprea_Backend/internal/domain"
-	"github.com/Suuu-sh/Sprea_Backend/internal/port"
+	"github.com/yota/sprea/backend/internal/domain"
+	"github.com/yota/sprea/backend/internal/port"
 )
 
 type Opportunities struct{ repo port.OpportunityRepository }

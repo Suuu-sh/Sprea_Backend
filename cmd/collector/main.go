@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Suuu-sh/Sprea_Backend/internal/collector"
-	"github.com/Suuu-sh/Sprea_Backend/internal/collector/rakuten"
-	"github.com/Suuu-sh/Sprea_Backend/internal/port"
+	"github.com/yota/sprea/backend/internal/collector"
+	buybackcsv "github.com/yota/sprea/backend/internal/collector/csv"
+	"github.com/yota/sprea/backend/internal/collector/rakuten"
+	"github.com/yota/sprea/backend/internal/port"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,13 @@ func main() {
 			log.Fatal(err)
 		}
 		source = c
+	}
+	if path := strings.TrimSpace(os.Getenv("SPREA_BUYBACK_CSV")); path != "" {
+		offers, err := buybackcsv.ReadFile(path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		source = collector.Matched{Purchases: source, Buybacks: offers}
 	}
 	items, err := source.Collect(ctx)
 	if err != nil {

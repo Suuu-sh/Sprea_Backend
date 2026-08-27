@@ -2,7 +2,7 @@ package port
 
 import (
 	"context"
-	"github.com/Suuu-sh/Sprea_Backend/internal/domain"
+	"github.com/yota/sprea/backend/internal/domain"
 )
 
 type OpportunityRepository interface {
@@ -23,4 +23,8 @@ type MarketRepository interface {
 	SaveSettings(context.Context, domain.UserSettings) error
 	ListAlerts(context.Context, string) ([]domain.AlertRule, error)
 	CreateAlert(context.Context, domain.AlertRule) (domain.AlertRule, error)
+	EvaluateNotifications(context.Context, []domain.Opportunity) (int, error)
+	ListNotifications(context.Context, string, int) ([]domain.Notification, error)
+	RecordCollectorRun(context.Context, domain.CollectorRun) error
+	ListCollectorRuns(context.Context, int) ([]domain.CollectorRun, error)
 }

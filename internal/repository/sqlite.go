@@ -4,9 +4,104 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/Suuu-sh/Sprea_Backend/internal/domain"
+	"fmt"
+	"github.com/yota/sprea/backend/internal/domain"
 	_ "modernc.org/sqlite"
 )
+
+func (s *SQLite) EvaluateNotifications(ctx context.Context, items []domain.Opportunity) (int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.user_id,a.name,a.minimum_profit,a.minimum_profit_rate,COALESCE(u.point_adjustment,0) FROM alert_rules a LEFT JOIN user_settings u ON u.user_id=a.user_id WHERE a.enabled=1`)
+	if err != nil {
+		return 0, err
+	}
+	type candidate struct {
+		id         int64
+		user, name string
+		minProfit  int
+		minRate    float64
+		adjustment int
+	}
+	var rules []candidate
+	for rows.Next() {
+		var r candidate
+		if err := rows.Scan(&r.id, &r.user, &r.name, &r.minProfit, &r.minRate, &r.adjustment); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		rules = append(rules, r)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	created := 0
+	for _, r := range rules {
+		for _, raw := range items {
+			o := raw.WithPointAdjustment(r.adjustment)
+			if o.Profit < r.minProfit || o.ProfitRate < r.minRate {
+				continue
+			}
+			fingerprint := fmt.Sprintf("%d:%d:%d:%d", o.PurchasePrice, o.BuybackPrice, o.BasePointRate, r.adjustment)
+			res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO notification_outbox(user_id,alert_rule_id,opportunity_id,fingerprint,title,body) VALUES(?,?,?,?,?,?)`, r.user, r.id, o.ID, fingerprint, r.name, fmt.Sprintf("%s の見込み利益は %d円（%.1f%%）です", o.Name, o.Profit, o.ProfitRate))
+			if err != nil {
+				return 0, err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				created += int(n)
+			}
+		}
+	}
+	return created, tx.Commit()
+}
+
+func (s *SQLite) ListNotifications(ctx context.Context, user string, limit int) ([]domain.Notification, error) {
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,user_id,alert_rule_id,opportunity_id,title,body,status,created_at FROM notification_outbox WHERE user_id=? ORDER BY id DESC LIMIT ?`, user, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Notification{}
+	for rows.Next() {
+		var x domain.Notification
+		if err := rows.Scan(&x.ID, &x.UserID, &x.AlertRuleID, &x.OpportunityID, &x.Title, &x.Body, &x.Status, &x.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) RecordCollectorRun(ctx context.Context, x domain.CollectorRun) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO collector_runs(run_id,source,status,item_count,message,started_at,finished_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET source=excluded.source,status=excluded.status,item_count=excluded.item_count,message=excluded.message,started_at=excluded.started_at,finished_at=excluded.finished_at`, x.RunID, x.Source, x.Status, x.ItemCount, x.Message, x.StartedAt, x.FinishedAt)
+	return err
+}
+
+func (s *SQLite) ListCollectorRuns(ctx context.Context, limit int) ([]domain.CollectorRun, error) {
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,run_id,source,status,item_count,message,started_at,finished_at FROM collector_runs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.CollectorRun{}
+	for rows.Next() {
+		var x domain.CollectorRun
+		if err := rows.Scan(&x.ID, &x.RunID, &x.Source, &x.Status, &x.ItemCount, &x.Message, &x.StartedAt, &x.FinishedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
 
 type SQLite struct{ db *sql.DB }
 
@@ -27,7 +122,11 @@ func NewSQLite(path string) (*SQLite, error) {
 	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS price_history (id INTEGER PRIMARY KEY AUTOINCREMENT, opportunity_id INTEGER NOT NULL, purchase_price INTEGER NOT NULL, buyback_price INTEGER NOT NULL, captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 	CREATE TABLE IF NOT EXISTS user_settings (user_id TEXT PRIMARY KEY, point_adjustment INTEGER NOT NULL DEFAULT 0, minimum_profit INTEGER NOT NULL DEFAULT 1000, minimum_profit_rate REAL NOT NULL DEFAULT 3);
-	CREATE TABLE IF NOT EXISTS alert_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, name TEXT NOT NULL, minimum_profit INTEGER NOT NULL, minimum_profit_rate REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);`)
+	CREATE TABLE IF NOT EXISTS alert_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, name TEXT NOT NULL, minimum_profit INTEGER NOT NULL, minimum_profit_rate REAL NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
+	CREATE TABLE IF NOT EXISTS notification_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, alert_rule_id INTEGER NOT NULL, opportunity_id INTEGER NOT NULL, fingerprint TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(alert_rule_id,opportunity_id,fingerprint));
+	CREATE INDEX IF NOT EXISTS notification_outbox_user_idx ON notification_outbox(user_id,id DESC);
+	CREATE TABLE IF NOT EXISTS collector_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL UNIQUE, source TEXT NOT NULL, status TEXT NOT NULL, item_count INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT NOT NULL);
+	CREATE INDEX IF NOT EXISTS collector_runs_finished_idx ON collector_runs(id DESC);`)
 	if err != nil {
 		db.Close()
 		return nil, err

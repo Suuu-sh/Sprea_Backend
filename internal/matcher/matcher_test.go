@@ -45,3 +45,13 @@ func TestMatchNameConservatively(t *testing.T) {
 		t.Fatal("weak name matched")
 	}
 }
+func TestEnrichRejectsVariantsEmbeddedInName(t *testing.T) {
+	r := Match(Product{Name: "iPad 第２世代 64 GB"}, Product{Name: "iPad 第3世代 64GB"})
+	if r.Matched || r.Reason != "generation mismatch" {
+		t.Fatalf("unexpected: %+v", r)
+	}
+	r = Match(Product{Name: "iPad 第2世代 64GB"}, Product{Name: "iPad 第2世代 128 GB"})
+	if r.Matched || r.Reason != "capacity mismatch" {
+		t.Fatalf("unexpected: %+v", r)
+	}
+}

@@ -2,7 +2,6 @@ interface Env {
   DB: D1Database;
   INGEST_API_KEY: string;
   ALLOWED_ORIGIN: string;
-  NOTIFICATION_EMAIL?: string;
 }
 
 type OpportunityRow = {
@@ -102,21 +101,22 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === "GET" && url.pathname === "/api/alerts") {
-    const { results } = await env.DB.prepare("SELECT id,user_id AS userId,name,minimum_profit AS minimumProfit,minimum_profit_rate AS minimumProfitRate,enabled FROM alert_rules WHERE user_id=? ORDER BY id DESC")
-      .bind(userId).all();
-    return json(results.map((x: Record<string, unknown>) => ({ ...x, enabled: Boolean(x.enabled) })));
+    const {results}=await env.DB.prepare("SELECT id,user_id AS userId,name,minimum_profit AS minimumProfit,minimum_profit_rate AS minimumProfitRate,enabled FROM alert_rules WHERE user_id=? ORDER BY id DESC").bind(userId).all();return json(results);
   }
-
   if (request.method === "POST" && url.pathname === "/api/alerts") {
-    const body: Record<string, unknown> = await request.json<Record<string, unknown>>().catch(() => ({}));
-    const name = typeof body.name === "string" ? body.name.trim().slice(0, 100) : "";
-    const minimumProfit = Number(body.minimumProfit ?? 0), minimumProfitRate = Number(body.minimumProfitRate ?? 0);
-    if (!name || !Number.isFinite(minimumProfit) || minimumProfit < 0 || !Number.isFinite(minimumProfitRate) || minimumProfitRate < 0)
-      return json({ error: "invalid alert" }, 400);
-    const now = new Date().toISOString();
-    const result = await env.DB.prepare("INSERT INTO alert_rules(user_id,name,minimum_profit,minimum_profit_rate,enabled,created_at) VALUES(?,?,?,?,1,?)")
-      .bind(userId, name, Math.floor(minimumProfit), minimumProfitRate, now).run();
-    return json({ id: result.meta.last_row_id, userId, name, minimumProfit: Math.floor(minimumProfit), minimumProfitRate, enabled: true }, 201);
+    const body:Record<string,unknown>=await request.json<Record<string,unknown>>().catch(()=>({}));const name=String(body.name??"").trim(),minProfit=Number(body.minimumProfit??0),minRate=Number(body.minimumProfitRate??0);if(!name||name.length>100||minProfit<0||minRate<0)return json({error:"invalid alert"},400);
+    const result=await env.DB.prepare("INSERT INTO alert_rules(user_id,name,minimum_profit,minimum_profit_rate,enabled) VALUES(?,?,?,?,1)").bind(userId,name,Math.floor(minProfit),minRate).run();return json({id:result.meta.last_row_id,userId,name,minimumProfit:Math.floor(minProfit),minimumProfitRate:minRate,enabled:true},201);
+  }
+  if (request.method === "GET" && url.pathname === "/api/notifications") {
+    const limit=Math.max(1,Math.min(200,Number.parseInt(url.searchParams.get("limit")||"50",10)||50));const {results}=await env.DB.prepare("SELECT id,user_id AS userId,alert_rule_id AS alertRuleId,opportunity_id AS opportunityId,title,body,status,created_at AS createdAt FROM notification_outbox WHERE user_id=? ORDER BY id DESC LIMIT ?").bind(userId,limit).all();return json(results);
+  }
+  if (request.method === "GET" && url.pathname === "/api/collector/status") {
+    const limit=Math.max(1,Math.min(100,Number.parseInt(url.searchParams.get("limit")||"20",10)||20));const {results}=await env.DB.prepare("SELECT id,run_id AS runId,source,status,item_count AS itemCount,message,started_at AS startedAt,finished_at AS finishedAt FROM collector_runs ORDER BY id DESC LIMIT ?").bind(limit).all();return json({lastRun:results[0]??null,runs:results});
+  }
+  if (request.method === "POST" && url.pathname === "/api/collector/runs") {
+    if(!env.INGEST_API_KEY||request.headers.get("authorization")!==`Bearer ${env.INGEST_API_KEY}`)return json({error:"unauthorized"},401);const x:Record<string,unknown>=await request.json<Record<string,unknown>>().catch(()=>({}));
+    if(typeof x.runId!=="string"||!x.runId||typeof x.source!=="string"||!x.source||!["running","succeeded","failed"].includes(String(x.status))||Number(x.itemCount??0)<0||String(x.message??"").length>1000)return json({error:"invalid collector run"},400);
+    await env.DB.prepare("INSERT INTO collector_runs(run_id,source,status,item_count,message,started_at,finished_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET source=excluded.source,status=excluded.status,item_count=excluded.item_count,message=excluded.message,started_at=excluded.started_at,finished_at=excluded.finished_at").bind(x.runId,x.source,x.status,Math.floor(Number(x.itemCount??0)),String(x.message??""),String(x.startedAt??""),String(x.finishedAt??"")).run();return json(x,202);
   }
 
   if (request.method === "POST" && (url.pathname === "/api/ingest/opportunities" || url.pathname === "/api/ingest")) {
@@ -133,20 +133,11 @@ async function route(request: Request, env: Env): Promise<Response> {
         .bind(externalKey,item.name,item.category,item.source,item.buyer,item.imageUrl ?? "",item.purchasePrice,item.buybackPrice,item.basePointRate ?? 0,item.productUrl ?? "",updatedAt).run();
       await env.DB.prepare("INSERT INTO price_history(opportunity_id,purchase_price,buyback_price,base_point_rate,recorded_at) SELECT id,?,?,?,? FROM opportunities WHERE external_key=?")
         .bind(item.purchasePrice,item.buybackPrice,item.basePointRate ?? 0,updatedAt,externalKey).run();
-      if (env.NOTIFICATION_EMAIL) {
-        const opportunity = await env.DB.prepare("SELECT * FROM opportunities WHERE external_key=?").bind(externalKey).first<OpportunityRow>();
-        if (opportunity) {
-          const shown = present(opportunity, 0);
-          const { results: rules } = await env.DB.prepare("SELECT id,name FROM alert_rules WHERE enabled=1 AND minimum_profit<=? AND minimum_profit_rate<=?")
-            .bind(shown.profit, shown.profitRate).all<{ id: number; name: string }>();
-          for (const rule of rules) {
-            await env.DB.prepare("INSERT OR IGNORE INTO notification_outbox(alert_rule_id,opportunity_id,recipient,subject,body,status,created_at) VALUES(?,?,?,?,?,'pending',?)")
-              .bind(rule.id, opportunity.id, env.NOTIFICATION_EMAIL, `[Sprea] ${rule.name}: ${item.name}`, `${item.name}\n利益: ¥${shown.profit.toLocaleString("ja-JP")}\n利益率: ${shown.profitRate.toFixed(1)}%`, now).run();
-          }
-        }
-      }
     }
-    return json({ accepted: items.length }, 202);
+    const {results:rules}=await env.DB.prepare("SELECT a.id,a.user_id,a.name,a.minimum_profit,a.minimum_profit_rate,COALESCE(u.point_adjustment,0) AS adjustment FROM alert_rules a LEFT JOIN user_settings u ON u.user_id=a.user_id WHERE a.enabled=1").all<{id:number;user_id:string;name:string;minimum_profit:number;minimum_profit_rate:number;adjustment:number}>();
+    let notificationsCreated=0;
+    for(const rule of rules){for(const item of items){const externalKey=item.externalKey||`${item.source}:${item.buyer}:${item.name}`;const opportunity=await env.DB.prepare("SELECT id FROM opportunities WHERE external_key=?").bind(externalKey).first<{id:number}>();if(!opportunity)continue;const rate=Math.max(0,(item.basePointRate??0)+rule.adjustment),cost=item.purchasePrice-Math.floor(item.purchasePrice*rate/100),profit=item.buybackPrice-cost,profitRate=cost>0?profit/cost*100:0;if(profit<rule.minimum_profit||profitRate<rule.minimum_profit_rate)continue;const fingerprint=`${item.purchasePrice}:${item.buybackPrice}:${item.basePointRate??0}:${rule.adjustment}`;const result=await env.DB.prepare("INSERT OR IGNORE INTO notification_outbox(user_id,alert_rule_id,opportunity_id,fingerprint,title,body) VALUES(?,?,?,?,?,?)").bind(rule.user_id,rule.id,opportunity.id,fingerprint,rule.name,`${item.name} の見込み利益は ${profit}円（${profitRate.toFixed(1)}%）です`).run();notificationsCreated+=result.meta.changes;}}
+    return json({ accepted: items.length, notificationsCreated }, 202);
   }
 
   return json({ error: "not found" }, 404);

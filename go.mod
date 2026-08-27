@@ -1,4 +1,4 @@
-module github.com/Suuu-sh/Sprea_Backend
+module github.com/yota/sprea/backend
 
 go 1.24.0
 

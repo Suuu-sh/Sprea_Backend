@@ -15,10 +15,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Suuu-sh/Sprea_Backend/internal/domain"
-	"github.com/Suuu-sh/Sprea_Backend/internal/port"
+	"github.com/yota/sprea/backend/internal/domain"
+	"github.com/yota/sprea/backend/internal/port"
 )
 
+// Current production version as of 2026-08. Rakuten retired the legacy
+// app.rakuten.co.jp endpoint and now requires an access key in addition to the
+// application ID.
 const defaultEndpoint = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701"
 
 var ErrMissingApplicationID = errors.New("rakuten application ID is required")
@@ -36,7 +39,8 @@ type Config struct {
 }
 
 // NewFromEnv creates a collector from runtime configuration. Only the
-// application ID is required; the remaining values have safe local defaults.
+// application ID and access key are required; the remaining values have safe
+// local defaults.
 func NewFromEnv() (*Collector, error) {
 	hits, _ := strconv.Atoi(os.Getenv("RAKUTEN_HITS"))
 	return New(Config{
@@ -88,13 +92,43 @@ func New(cfg Config) (*Collector, error) {
 }
 
 func (c *Collector) Collect(ctx context.Context) ([]domain.Opportunity, error) {
+	products, err := c.CollectProducts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]domain.Opportunity, 0, len(products))
+	for _, product := range products {
+		items = append(items, domain.Opportunity{
+			Name: product.Name, Category: product.GenreID, Source: "楽天市場",
+			ImageURL: product.ImageURL, PurchasePrice: product.Price,
+			Buyer: "未照合", BuybackPrice: 0, BasePointRate: product.PointRate,
+			UpdatedAt: time.Now().Format(time.RFC3339),
+		})
+	}
+	return items, nil
+}
+
+// Product preserves identifiers and destination URLs needed by the later
+// matching and affiliate-link layers. port.Collector's Opportunity cannot yet
+// represent these fields, so callers needing them should use CollectProducts.
+type Product struct {
+	ItemCode     string
+	Name         string
+	Price        int
+	GenreID      string
+	PointRate    int
+	ImageURL     string
+	ItemURL      string
+	AffiliateURL string
+}
+
+func (c *Collector) CollectProducts(ctx context.Context) ([]Product, error) {
 	u, err := url.Parse(c.endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("parse Rakuten endpoint: %w", err)
 	}
 	q := u.Query()
 	q.Set("applicationId", c.applicationID)
-	q.Set("accessKey", c.accessKey)
 	q.Set("format", "json")
 	q.Set("formatVersion", "2")
 	q.Set("hits", strconv.Itoa(c.hits))
@@ -113,6 +147,7 @@ func (c *Collector) Collect(ctx context.Context) ([]domain.Opportunity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build Rakuten request: %w", err)
 	}
+	req.Header.Set("accessKey", c.accessKey)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request Rakuten items: %w", err)
@@ -126,30 +161,35 @@ func (c *Collector) Collect(ctx context.Context) ([]domain.Opportunity, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode Rakuten response: %w", err)
 	}
-	items := make([]domain.Opportunity, 0, len(payload.Items))
+	if len(payload.Items) == 0 && len(payload.LegacyItems) > 0 {
+		payload.Items = payload.LegacyItems
+	}
+	items := make([]Product, 0, len(payload.Items))
 	for _, item := range payload.Items {
 		imageURL := ""
 		if len(item.MediumImageURLs) > 0 {
 			imageURL = item.MediumImageURLs[0]
 		}
-		items = append(items, domain.Opportunity{
-			Name: item.ItemName, Category: item.GenreName, Source: "楽天市場",
-			ImageURL: imageURL, PurchasePrice: item.ItemPrice,
-			// A buyback collector/matcher fills these fields in a later pipeline stage.
-			Buyer: "未照合", BuybackPrice: 0, BasePointRate: item.PointRate,
-			UpdatedAt: time.Now().Format(time.RFC3339),
+		items = append(items, Product{
+			ItemCode: item.ItemCode, Name: item.ItemName, Price: item.ItemPrice,
+			GenreID: fmt.Sprint(item.GenreID), PointRate: item.PointRate, ImageURL: imageURL,
+			ItemURL: item.ItemURL, AffiliateURL: item.AffiliateURL,
 		})
 	}
 	return items, nil
 }
 
 type searchResponse struct {
-	Items []rakutenItem `json:"Items"`
+	Items       []rakutenItem `json:"Items"`
+	LegacyItems []rakutenItem `json:"items"`
 }
 type rakutenItem struct {
 	ItemName        string   `json:"itemName"`
+	ItemCode        string   `json:"itemCode"`
 	ItemPrice       int      `json:"itemPrice"`
-	GenreName       string   `json:"genreName"`
+	GenreID         any      `json:"genreId"`
 	PointRate       int      `json:"pointRate"`
 	MediumImageURLs []string `json:"mediumImageUrls"`
+	ItemURL         string   `json:"itemUrl"`
+	AffiliateURL    string   `json:"affiliateUrl"`
 }

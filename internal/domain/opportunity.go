@@ -40,6 +40,30 @@ type AlertRule struct {
 	Enabled           bool    `json:"enabled"`
 }
 
+// Notification is an immutable delivery record. Pending records form an
+// outbox so an external mail provider can be added without losing events.
+type Notification struct {
+	ID            int64  `json:"id"`
+	UserID        string `json:"userId"`
+	AlertRuleID   int64  `json:"alertRuleId"`
+	OpportunityID int64  `json:"opportunityId"`
+	Title         string `json:"title"`
+	Body          string `json:"body"`
+	Status        string `json:"status"`
+	CreatedAt     string `json:"createdAt"`
+}
+
+type CollectorRun struct {
+	ID         int64  `json:"id"`
+	RunID      string `json:"runId"`
+	Source     string `json:"source"`
+	Status     string `json:"status"`
+	ItemCount  int    `json:"itemCount"`
+	Message    string `json:"message"`
+	StartedAt  string `json:"startedAt"`
+	FinishedAt string `json:"finishedAt"`
+}
+
 func (o Opportunity) WithPointAdjustment(adjustment int) Opportunity {
 	o.AdjustedRate = max(0, o.BasePointRate+adjustment)
 	o.PointValue = o.PurchasePrice * o.AdjustedRate / 100

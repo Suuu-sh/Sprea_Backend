@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"github.com/Suuu-sh/Sprea_Backend/internal/collector"
-	"github.com/Suuu-sh/Sprea_Backend/internal/httpapi"
-	"github.com/Suuu-sh/Sprea_Backend/internal/repository"
-	"github.com/Suuu-sh/Sprea_Backend/internal/service"
+	"github.com/yota/sprea/backend/internal/collector"
+	"github.com/yota/sprea/backend/internal/httpapi"
+	"github.com/yota/sprea/backend/internal/repository"
+	"github.com/yota/sprea/backend/internal/service"
 	"log"
 	"net/http"
 	"os"

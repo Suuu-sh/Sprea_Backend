@@ -25,6 +25,7 @@ var (
 // Match prioritizes an exact valid JAN. Conflicting variants are always rejected,
 // even when names are similar, to avoid expensive false-positive opportunities.
 func Match(a, b Product) Result {
+	a, b = Enrich(a), Enrich(b)
 	if conflicts(a.Capacity, b.Capacity) {
 		return Result{Reason: "capacity mismatch"}
 	}
@@ -50,6 +51,12 @@ func Match(a, b Product) Result {
 		return Result{Matched: true, Confidence: .94, Reason: "model match"}
 	}
 	score := tokenSimilarity(normalizeName(a.Name), normalizeName(b.Name))
+	// A shared explicit capacity is strong variant evidence. This also handles
+	// harmless title formatting such as "64GB" versus "64 GB" without allowing
+	// a different capacity through the conflict checks above.
+	if a.Capacity != "" && b.Capacity != "" && score >= .5 {
+		return Result{Matched: true, Confidence: .9, Reason: "name+capacity match"}
+	}
 	if score >= .8 {
 		return Result{Matched: true, Confidence: .65 + score*.2, Reason: "name match"}
 	}
@@ -72,7 +79,9 @@ func normalizeName(s string) string {
 	return spaces.ReplaceAllString(strings.TrimSpace(s), " ")
 }
 
-func conflicts(a, b string) bool { return a != "" && b != "" && NormalizeModel(a) != NormalizeModel(b) }
+func conflicts(a, b string) bool {
+	return a != "" && b != "" && canonicalVariant(a) != canonicalVariant(b)
+}
 func digits(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsDigit(r) {
@@ -93,6 +102,49 @@ func widthFold(r rune) rune {
 		return r - '０' + '0'
 	}
 	return r
+}
+
+var (
+	capacityPattern   = regexp.MustCompile(`(?i)(\d+)\s*(tb|gb)`)
+	generationPattern = regexp.MustCompile(`(?i)(?:第\s*(\d+)\s*世代|(?:gen(?:eration)?\s*)(\d+))`)
+	janPattern        = regexp.MustCompile(`(?:^|\D)(\d{13}|\d{8})(?:\D|$)`)
+)
+
+// Enrich extracts safe variant identifiers from a title when collectors do not
+// provide dedicated fields. Explicit collector values always win.
+func Enrich(p Product) Product {
+	folded := strings.Map(widthFold, p.Name)
+	if p.Capacity == "" {
+		if m := capacityPattern.FindStringSubmatch(folded); m != nil {
+			p.Capacity = m[1] + strings.ToUpper(m[2])
+		}
+	}
+	if p.Generation == "" {
+		if m := generationPattern.FindStringSubmatch(folded); m != nil {
+			p.Generation = first(m[1], m[2])
+		}
+	}
+	if p.JAN == "" {
+		if m := janPattern.FindStringSubmatch(folded); m != nil {
+			p.JAN = m[1]
+		}
+	}
+	return p
+}
+func first(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+func canonicalVariant(s string) string {
+	s = strings.ToLower(strings.Map(widthFold, s))
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, s)
 }
 
 func tokenSimilarity(a, b string) float64 {

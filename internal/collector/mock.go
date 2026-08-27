@@ -2,7 +2,7 @@ package collector
 
 import (
 	"context"
-	"github.com/Suuu-sh/Sprea_Backend/internal/domain"
+	"github.com/yota/sprea/backend/internal/domain"
 )
 
 type Mock struct{}
