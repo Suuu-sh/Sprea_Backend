@@ -271,7 +271,7 @@ func (s *Store) SaveSourcePolicy(ctx context.Context, x SourcePolicy) error {
 		return fmt.Errorf("reviewedAt is required")
 	}
 	switch x.Status {
-	case "approved", "manual_only", "blocked":
+	case "approved", "credential_required", "review_required", "manual_only", "blocked":
 	default:
 		return fmt.Errorf("invalid source policy status")
 	}

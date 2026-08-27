@@ -30,6 +30,10 @@ func main() {
 	for _, policy := range []research.SourcePolicy{
 		{Source: "apple.com", Method: "scrape", TermsURL: "https://www.apple.com/legal/internet-services/terms/site.html", RobotsURL: "https://www.apple.com/robots.txt", Status: "blocked", ReviewedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Notes: "Apple Website Terms prohibit automated page scraping."},
 		{Source: "rakuten", Method: "official_api", TermsURL: "https://webservice.rakuten.co.jp/guide/rule", Status: "approved", ReviewedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Notes: "Use Rakuten Web Service only; credentials and rate limits are required."},
+		{Source: "yahoo-shopping", Method: "official_api", TermsURL: "https://developer.yahoo.co.jp/webapi/shopping/", Status: "credential_required", ReviewedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Notes: "Class A. Use Shopping itemSearch v3 at no more than one query per second; Client ID is required."},
+		{Source: "amazon-jp", Method: "official_api", TermsURL: "https://affiliate-program.amazon.com/creatorsapi/docs/en-us/introduction", Status: "credential_required", ReviewedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Notes: "Class A only when Creators API eligibility and affiliate-purpose terms are satisfied. Never scrape Amazon pages."},
+		{Source: "janpara", Method: "low_frequency_http", RobotsURL: "https://www.janpara.co.jp/robots.txt", Status: "review_required", ReviewedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Notes: "Class B candidate only. Keep manual CSV until terms and robots can both be verified."},
+		{Source: "1-chome", Method: "low_frequency_http", RobotsURL: "https://www.1-chome.com/robots.txt", Status: "review_required", ReviewedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Notes: "Class B candidate only. Keep manual CSV until terms and robots can both be verified."},
 		{Source: "buyback-csv", Method: "manual_csv", Status: "manual_only", ReviewedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Notes: "HTTP collection stays disabled until each buyback source is reviewed."},
 	} {
 		if err := store.SaveSourcePolicy(context.Background(), policy); err != nil {

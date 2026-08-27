@@ -33,6 +33,9 @@ Collector
 | Apple 公式サイト | 自動取得しない | Website Terms of Use が page-scrape、robot 等による取得・監視を禁止しているため |
 | 楽天市場 | 公式 Rakuten Web Service API のみ | 商品検索用の公式 API と利用規約が提供されているため。アプリID・アクセスキー、表示条件、レート制限を守る |
 | 買取店 | 審査済み API が見つかるまで CSV 手動取込 | 各店の利用規約と robots.txt の両方を確認できるまで HTTP Collector を作らない |
+| Yahoo!ショッピング | A: 公式商品検索API | Client ID取得後に商品検索v3を利用。公式案内の1クエリ/秒以下を守る |
+| Amazon.co.jp | A候補だが資格情報待ち | PA-API終了後はCreators API。参加資格とアフィリエイト目的の条件を満たす場合だけ利用し、Web画面は取得しない |
+| じゃんぱら・買取1丁目 | B候補／現在は手動のみ | 規約とrobots.txtを両方確認できるまで自動化しない |
 
 robots.txt は許可証ではありません。robots.txt が許可していても利用規約が禁止する場合は取得しません。逆に明示的な公式 API がある場合は API 規約を優先して実装します。
 
