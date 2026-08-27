@@ -166,3 +166,10 @@ type Portfolio struct {
 	AvailableCash  int `json:"availableCash"`
 	OpenTrades     int `json:"openTrades"`
 }
+
+type Dashboard struct {
+	Portfolio     Portfolio          `json:"portfolio"`
+	Opportunities []Opportunity      `json:"opportunities"`
+	Decisions     []ResearchDecision `json:"decisions"`
+	Metrics48h    StrategyMetrics    `json:"metrics48h"`
+}

@@ -291,6 +291,70 @@ func (s *Store) SourceAllowed(ctx context.Context, source, method string) (bool,
 	return status == "approved" && allowedMethod == method, nil
 }
 
+func (s *Store) LatestOpportunities(ctx context.Context, limit int) ([]Opportunity, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT o.canonical_key,o.title,o.purchase_source,o.buyback_source,o.purchase_price,o.purchase_shipping,o.buyback_price,o.sale_shipping,o.fees,o.certain_rewards,o.market_profit,o.profit_rate,o.resolver_confidence,o.detected_at,f.buyback_store_count,f.second_buyback_price,f.top_two_spread_rate,f.capital_days,f.annualized_return,f.return_30_days,f.sprea_score FROM research_opportunities o JOIN opportunity_features f ON f.canonical_key=o.canonical_key AND f.detected_at=o.detected_at JOIN (SELECT canonical_key,MAX(detected_at) detected_at FROM research_opportunities GROUP BY canonical_key) latest ON latest.canonical_key=o.canonical_key AND latest.detected_at=o.detected_at ORDER BY o.market_profit DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Opportunity{}
+	for rows.Next() {
+		var x Opportunity
+		var detected string
+		if err := rows.Scan(&x.CanonicalKey, &x.Title, &x.PurchaseSource, &x.BuybackSource, &x.PurchasePrice, &x.PurchaseShipping, &x.BuybackPrice, &x.SaleShipping, &x.Fees, &x.CertainRewards, &x.MarketProfit, &x.ProfitRate, &x.ResolverConfidence, &detected, &x.BuybackStoreCount, &x.SecondBuybackPrice, &x.TopTwoSpreadRate, &x.CapitalDays, &x.AnnualizedReturn, &x.Return30Days, &x.SpreaScore); err != nil {
+			return nil, err
+		}
+		x.DetectedAt, _ = time.Parse(time.RFC3339Nano, detected)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) LatestDecisions(ctx context.Context, limit int) ([]ResearchDecision, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,canonical_key,title,decision,reason,strategy,purchase_price,purchase_shipping,sale_shipping,fees,entry_profit,sprea_score,decided_at FROM research_decisions ORDER BY decided_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ResearchDecision{}
+	for rows.Next() {
+		var x ResearchDecision
+		var decided string
+		if err := rows.Scan(&x.ID, &x.CanonicalKey, &x.Title, &x.Decision, &x.Reason, &x.Strategy, &x.PurchasePrice, &x.PurchaseShipping, &x.SaleShipping, &x.Fees, &x.EntryProfit, &x.SpreaScore, &decided); err != nil {
+			return nil, err
+		}
+		x.DecidedAt, _ = time.Parse(time.RFC3339Nano, decided)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
+	p, err := s.Portfolio(ctx, 300000)
+	if err != nil {
+		return Dashboard{}, err
+	}
+	o, err := s.LatestOpportunities(ctx, 100)
+	if err != nil {
+		return Dashboard{}, err
+	}
+	d, err := s.LatestDecisions(ctx, 100)
+	if err != nil {
+		return Dashboard{}, err
+	}
+	m, err := s.StrategyMetrics(ctx, "rule-v1", 48)
+	if err != nil {
+		return Dashboard{}, err
+	}
+	return Dashboard{Portfolio: p, Opportunities: o, Decisions: d, Metrics48h: m}, nil
+}
+
 func (s *Store) Portfolio(ctx context.Context, initial int) (Portfolio, error) {
 	var locked, count, realized int
 	err := s.db.QueryRowContext(ctx, `SELECT

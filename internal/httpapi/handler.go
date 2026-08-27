@@ -46,8 +46,22 @@ func New(s *service.Opportunities, repo port.OpportunityRepository, market port.
 	mux.HandleFunc("POST /api/import/buybacks.csv", h.importBuybacksCSV)
 	mux.HandleFunc("GET /api/research/portfolio", h.researchPortfolio)
 	mux.HandleFunc("GET /api/research/metrics", h.researchMetrics)
+	mux.HandleFunc("GET /api/research/dashboard", h.researchDashboard)
 	mux.HandleFunc("POST /api/research/reality", h.recordReality)
 	return cors(mux)
+}
+
+func (h *Handler) researchDashboard(w http.ResponseWriter, r *http.Request) {
+	if h.research == nil {
+		writeJSON(w, 503, map[string]string{"error": "research store unavailable"})
+		return
+	}
+	x, err := h.research.Dashboard(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
 }
 
 func (h *Handler) researchPortfolio(w http.ResponseWriter, r *http.Request) {
