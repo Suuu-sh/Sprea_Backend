@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	db := flag.String("db", "data/sprea-research.db", "SQLite database path")
+	db := flag.String("db", "data/sprea-research-demo.db", "SQLite database path")
 	input := flag.String("input", "", "optional observation CSV")
 	flag.Parse()
 	store, err := research.Open(*db)
