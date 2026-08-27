@@ -211,7 +211,7 @@ func (s *SQLite) List(ctx context.Context) ([]domain.Opportunity, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var result []domain.Opportunity
+	result := []domain.Opportunity{}
 	for rows.Next() {
 		var o domain.Opportunity
 		if err := rows.Scan(&o.ID, &o.Name, &o.Category, &o.Source, &o.Buyer, &o.ImageURL, &o.PurchasePrice, &o.BuybackPrice, &o.BasePointRate, &o.UpdatedAt); err != nil {
