@@ -4,3 +4,4 @@ INGEST_API_KEY=replace-with-a-separate-long-random-value
 ALLOWED_ORIGIN=http://localhost:3000
 SPREA_ENV=local
 SPREA_COLLECTOR_SOURCE=mock
+COLLECTOR_MODE=mock
