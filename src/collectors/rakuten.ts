@@ -1,5 +1,6 @@
 import type { Collector, ListingObservation } from "../types";
 import { appleIdentity, observation, positiveInteger } from "./catalog";
+import { stockStatusFromQuantity } from "../domain";
 
 const ENDPOINT = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701";
 
@@ -46,7 +47,7 @@ export class RakutenCollector implements Collector {
       // The API exposes only a postage flag, not an exact amount. Keep only
       // postage-included listings so profit cannot be inflated by unknown cost.
       if (!identity || !priceYen || !externalId || Number(item.availability) !== 1 || Number(item.postageFlag) !== 0) continue;
-      result.push(observation({ source: "rakuten", externalId, title, priceYen, ...identity, capturedAt, raw: item }));
+      result.push(observation({ source: "rakuten", externalId, title, priceYen, ...identity, capturedAt, raw: item, url: typeof item.itemUrl === "string" ? item.itemUrl : undefined, stockStatus: stockStatusFromQuantity(1) }));
     }
     return result;
   }

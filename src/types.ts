@@ -4,6 +4,7 @@ export interface ProductIdentity { gtin?:string; manufacturerPartNumber?:string;
 export interface ListingObservation extends ProductIdentity {
   source:string; externalId:string; side:ListingSide; title:string; url?:string; priceYen:number;
   shippingYen?:number; feeYen?:number; rewardYen?:number; stock:number; capturedAt:string; raw?:unknown;
+  stockStatus?: import("./domain/retail-listing").StockStatus; purchasable?:boolean;
 }
 /** Real collectors live outside the Worker and submit this neutral contract. */
 export interface Collector { collect(at:Date):Promise<ListingObservation[]>; }

@@ -1,6 +1,9 @@
 # Copy to .dev.vars. Never commit the real file.
 ADMIN_TOKEN=replace-with-a-long-random-value
 INGEST_API_KEY=replace-with-a-separate-long-random-value
+# Optional dedicated key for POST /api/ingest/buyback-quotes.
+# When omitted, the endpoint uses INGEST_API_KEY.
+SPREA_INGEST_TOKEN=replace-with-a-dedicated-buyback-ingest-value
 ALLOWED_ORIGIN=http://localhost:3000
 SPREA_ENV=local
 SPREA_COLLECTOR_SOURCE=mock

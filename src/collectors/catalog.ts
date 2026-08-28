@@ -1,4 +1,5 @@
 import type { ListingObservation } from "../types";
+import type { StockStatus } from "../domain";
 
 /** Shared, conservative normalization for official marketplace APIs. */
 export function appleIdentity(title: string): { manufacturerPartNumber: string; model: string; capacity: string } | null {
@@ -25,7 +26,8 @@ export function positiveInteger(value: unknown): number | null {
 
 export function observation(input: {
   source: string; externalId: string; title: string; priceYen: number;
-  gtin?: string; manufacturerPartNumber: string; model: string; capacity: string; capturedAt: string; raw: unknown;
+  gtin?: string; manufacturerPartNumber: string; model: string; capacity: string; capturedAt: string; raw: unknown; url?: string;
+  stockStatus?: StockStatus;
 }): ListingObservation {
   return {
     ...input,
@@ -37,5 +39,7 @@ export function observation(input: {
     rewardYen: 0,
     stock: 1,
     condition: "new",
+    stockStatus: input.stockStatus ?? "in_stock",
+    purchasable: Boolean(input.url),
   };
 }

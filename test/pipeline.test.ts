@@ -6,9 +6,12 @@ import {MockCollector} from "../src/mock-collector";
 import initial from "../migrations/0001_init.sql?raw";
 import research from "../migrations/0002_research_api.sql?raw";
 import safety from "../migrations/0003_research_safety.sql?raw";
+import buyback from "../migrations/0004_buyback_quotes.sql?raw";
+import buybackOpportunity from "../migrations/0005_buyback_opportunities.sql?raw";
+import liveOpportunities from "../migrations/0006_live_opportunities.sql?raw";
 
 function statements(migration:string){const out:string[]=[],lines=migration.split("\n");let buffer="",trigger=false;for(const line of lines){if(!trigger&&/^CREATE TRIGGER/i.test(line.trim()))trigger=true;buffer+=line+"\n";if(trigger){if(/^END;\s*$/i.test(line.trim())){out.push(buffer.trim().replace(/;$/,""));buffer="";trigger=false;}}else if(line.includes(";")){const parts=buffer.split(";");for(const part of parts.slice(0,-1))if(part.trim())out.push(part.trim());buffer=parts.at(-1)??"";}}if(buffer.trim())out.push(buffer.trim());return out;}
-beforeAll(async()=>{for(const migration of [initial,research,safety])for(const sql of statements(migration))await env.DB.prepare(sql).run();});
+beforeAll(async()=>{for(const migration of [initial,research,safety,buyback,buybackOpportunity,liveOpportunities])for(const sql of statements(migration))await env.DB.prepare(sql).run();});
 
 describe("Research Worker",()=>{
  it("keeps the mock vertical slice idempotent and within the 300k portfolio",async()=>{const at=new Date("2026-01-01T00:00:00Z"),first=await runPipeline(env.DB,new MockCollector(),at),again=await runPipeline(env.DB,new MockCollector(),at);expect(first.observations).toBe(5);expect(first.products).toBe(2);expect(first.snapshots).toBe(5);expect(first.opportunities).toBe(2);expect(first.buys).toBe(1);expect(again.snapshots).toBe(0);expect(again.buys).toBe(0);const account=await env.DB.prepare("SELECT * FROM research_paper_accounts").first<any>();expect(account.initial_cash_yen).toBe(300000);expect(account.available_cash_yen).toBeGreaterThanOrEqual(0);});
@@ -24,7 +27,7 @@ describe("Research Worker",()=>{
 
 describe("Research safety invariants",()=>{
  const fixed=(at:string)=>[
-  {source:"fixed-shop",externalId:"p",side:"purchase" as const,title:"Camera X body",brand:"Maker",model:"Camera X",variant:"body",manufacturerPartNumber:"CAM-X",priceYen:100000,shippingYen:0,feeYen:0,rewardYen:0,stock:1,capturedAt:at},
+  {source:"fixed-shop",externalId:"p",side:"purchase" as const,title:"Camera X body",url:"https://example.test/camera-x",brand:"Maker",model:"Camera X",variant:"body",manufacturerPartNumber:"CAM-X",priceYen:100000,shippingYen:0,feeYen:0,rewardYen:0,stock:1,capturedAt:at},
   {source:"fixed-buyback",externalId:"b",side:"buyback" as const,title:"Camera X buyback",brand:"Maker",model:"Camera X",variant:"body",manufacturerPartNumber:"CAM-X",priceYen:106000,shippingYen:0,feeYen:0,rewardYen:0,stock:1,capturedAt:at}
  ];
  it("evaluates unchanged prices at 48h without writing duplicate snapshots",async()=>{const start="2026-03-01T00:00:00.000Z";await ingestListings(env.DB,fixed(start),new Date(start));const snapshotsBefore=(await env.DB.prepare("SELECT COUNT(*) count FROM research_price_snapshots").first<any>()).count;const later="2026-03-03T00:00:00.000Z",result=await ingestListings(env.DB,fixed(later),new Date(later));expect(result.snapshots).toBe(0);expect((await env.DB.prepare("SELECT COUNT(*) count FROM research_price_snapshots").first<any>()).count).toBe(snapshotsBefore);const evaluation=await env.DB.prepare("SELECT profit_yen,target_met FROM research_evaluations WHERE horizon_hours=48").first<any>();expect(evaluation.profit_yen).toBe(6000);expect(evaluation.target_met).toBe(1);});
