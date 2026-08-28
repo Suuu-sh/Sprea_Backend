@@ -18,5 +18,9 @@ describe("research vertical slice",()=>{
     for(const hours of [24,48,72,169]) await runPipeline(env.DB,new MockCollector(),new Date(Date.parse("2026-01-01T00:00:00Z")+hours*3_600_000));
     const rows=await env.DB.prepare("SELECT horizon_hours FROM evaluations ORDER BY horizon_hours").all<any>();
     expect([...new Set(rows.results.map((x:any)=>x.horizon_hours))]).toEqual([24,48,72,168]);
+    const duplicates=await env.DB.prepare(`SELECT o.product_id,COUNT(*) count FROM paper_trades t
+      JOIN opportunities o ON o.id=t.opportunity_id WHERE t.status='OPEN'
+      GROUP BY o.product_id HAVING COUNT(*)>1`).all();
+    expect(duplicates.results).toHaveLength(0);
   });
 });
