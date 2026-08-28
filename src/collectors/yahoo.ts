@@ -1,5 +1,6 @@
 import type { Collector, ListingObservation } from "../types";
 import { appleIdentity, observation, positiveInteger } from "./catalog";
+import { stockStatusFromYahoo } from "../domain";
 
 const ENDPOINT = "https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch";
 
@@ -12,7 +13,7 @@ export interface YahooCollectorOptions {
 
 type YahooHit = {
   code?: unknown; name?: unknown; price?: unknown; inStock?: unknown; condition?: unknown;
-  janCode?: unknown; shipping?: { code?: unknown };
+  janCode?: unknown; shipping?: { code?: unknown }; url?:unknown;
 };
 
 export class YahooCollector implements Collector {
@@ -39,9 +40,10 @@ export class YahooCollector implements Collector {
       const externalId = typeof hit.code === "string" ? hit.code : "";
       // Yahoo code 2 means free shipping. Codes 1 and 3 have no exact shipping
       // amount in this response and are therefore rejected conservatively.
-      if (!identity || !priceYen || !externalId || hit.inStock !== true || hit.condition !== "new" || Number(hit.shipping?.code) !== 2) continue;
+      const stockStatus = stockStatusFromYahoo(hit.inStock);
+      if (!identity || !priceYen || !externalId || stockStatus !== "in_stock" || hit.condition !== "new" || Number(hit.shipping?.code) !== 2) continue;
       const gtin = typeof hit.janCode === "string" && /^\d{8,14}$/.test(hit.janCode) ? hit.janCode : undefined;
-      result.push(observation({ source: "yahoo-shopping", externalId, title, priceYen, gtin, ...identity, capturedAt, raw: hit }));
+      result.push(observation({ source: "yahoo-shopping", externalId, title, priceYen, gtin, ...identity, capturedAt, raw: hit, url: typeof hit.url === "string" ? hit.url : undefined, stockStatus }));
     }
     return result;
   }

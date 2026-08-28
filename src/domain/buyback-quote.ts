@@ -36,3 +36,6 @@ export type BuybackQuote = {
   matchConfidence?: number;
   matchReason?: string;
 };
+
+export const BUYBACK_MAX_AGE_MINUTES = 180;
+export function isFreshEligibleBuybackQuote(quote:BuybackQuote,now=new Date(),maxAgeMinutes=BUYBACK_MAX_AGE_MINUTES):boolean{const fetched=Date.parse(quote.fetchedAt);return (quote.condition==="new"||quote.condition==="unused")&&quote.buybackStatus==="accepting"&&Number.isSafeInteger(quote.price)&&quote.price>0&&Boolean(quote.productId)&&Number.isFinite(fetched)&&fetched<=now.getTime()&&fetched>now.getTime()-maxAgeMinutes*60_000;}

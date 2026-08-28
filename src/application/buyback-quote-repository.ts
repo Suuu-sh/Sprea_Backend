@@ -5,4 +5,5 @@ export interface BuybackQuoteRepository {
   findLatestByProductId(productId: string): Promise<BuybackQuote[]>;
   findLatestByJan(jan: string): Promise<BuybackQuote[]>;
   findLatestByProvider(provider: string): Promise<BuybackQuote[]>;
+  findEligibleByProductId(productId:string,now?:Date,maxAgeMinutes?:number):Promise<BuybackQuote[]>;
 }

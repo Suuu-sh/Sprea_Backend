@@ -6,9 +6,10 @@ import research from "../migrations/0002_research_api.sql?raw";
 import safety from "../migrations/0003_research_safety.sql?raw";
 import buyback from "../migrations/0004_buyback_quotes.sql?raw";
 import buybackOpportunity from "../migrations/0005_buyback_opportunities.sql?raw";
+import liveOpportunities from "../migrations/0006_live_opportunities.sql?raw";
 
 function statements(migration:string){const out:string[]=[],lines=migration.split("\n");let buffer="",trigger=false;for(const line of lines){if(!trigger&&/^CREATE TRIGGER/i.test(line.trim()))trigger=true;buffer+=line+"\n";if(trigger){if(/^END;\s*$/i.test(line.trim())){out.push(buffer.trim().replace(/;$/,""));buffer="";trigger=false;}}else if(line.includes(";")){const parts=buffer.split(";");for(const part of parts.slice(0,-1))if(part.trim())out.push(part.trim());buffer=parts.at(-1)??"";}}if(buffer.trim())out.push(buffer.trim());return out;}
-beforeAll(async()=>{for(const migration of [initial,research,safety,buyback,buybackOpportunity])for(const sql of statements(migration))await env.DB.prepare(sql).run();});
+beforeAll(async()=>{for(const migration of [initial,research,safety,buyback,buybackOpportunity,liveOpportunities])for(const sql of statements(migration))await env.DB.prepare(sql).run();});
 
 const valid={externalId:"quote-1",productName:"Camera X",jan:"4901234567890",modelNumber:"CAM-X",condition:"new",price:100000,shippingFee:0,fee:0,buybackStatus:"accepting",fetchedAt:"2026-08-29T00:00:00Z"};
 const request=(body:unknown,token?:string)=>worker.fetch!(new Request("http://test/api/ingest/buyback-quotes",{method:"POST",headers:{...(token?{authorization:`Bearer ${token}`}:{ }),"content-type":"application/json"},body:JSON.stringify(body)}),{...env,SPREA_INGEST_TOKEN:"secret",COLLECTOR_MODE:"disabled" as const} as Env);

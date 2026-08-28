@@ -1,12 +1,12 @@
 import type {BuybackQuote} from "./buyback-quote";
 import type {RetailListing} from "./retail-listing";
+import {isPurchasableRetailListing} from "./retail-listing";
+import {isFreshEligibleBuybackQuote} from "./buyback-quote";
 
-export function isEligibleRetailListing(listing: RetailListing): boolean {
-  return listing.condition === "new"
-    && listing.purchasable
-    && (listing.stockStatus === "in_stock" || listing.stockStatus === "low_stock");
+export function isEligibleRetailListing(listing: RetailListing,now=new Date()): boolean {
+  return listing.purchasable && isPurchasableRetailListing(listing,now);
 }
 
-export function isEligibleBuybackQuote(quote: BuybackQuote): boolean {
-  return quote.condition === "new" && quote.buybackStatus === "accepting";
+export function isEligibleBuybackQuote(quote: BuybackQuote,now=new Date()): boolean {
+  return isFreshEligibleBuybackQuote(quote,now);
 }

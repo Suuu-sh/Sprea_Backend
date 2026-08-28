@@ -1,5 +1,6 @@
 import type {BuybackQuote, BuybackSourceType, BuybackStatus, ProductCategory, ProductCondition} from "../domain";
 import type {BuybackQuoteRepository} from "../application/buyback-quote-repository";
+import {BUYBACK_MAX_AGE_MINUTES,isFreshEligibleBuybackQuote} from "../domain";
 
 type Row = Record<string, unknown>;
 const money = (value: unknown, field: string, positive = false): number => {
@@ -32,6 +33,7 @@ export class D1BuybackQuoteRepository implements BuybackQuoteRepository {
   async findLatestByProductId(productId: string): Promise<BuybackQuote[]> { return this.query("product_id=?", productId, true); }
   async findLatestByJan(jan: string): Promise<BuybackQuote[]> { return jan.trim() ? this.query("jan=?", jan.trim(), true) : []; }
   async findLatestByProvider(provider: string): Promise<BuybackQuote[]> { return this.query("provider=?", provider, false); }
+  async findEligibleByProductId(productId:string,now=new Date(),maxAgeMinutes=BUYBACK_MAX_AGE_MINUTES):Promise<BuybackQuote[]>{const cutoff=new Date(now.getTime()-maxAgeMinutes*60_000).toISOString(),rows=(await this.db.prepare(`WITH ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider ORDER BY fetched_at DESC,updated_at DESC,id DESC) rank FROM buyback_quotes WHERE product_id=?) SELECT * FROM ranked WHERE rank=1 AND condition IN ('new','unused') AND buyback_status='accepting' AND price>0 AND fetched_at>? AND fetched_at<=? ORDER BY price DESC,provider`).bind(productId,cutoff,now.toISOString()).all<Row>()).results;return rows.map(row=>this.map(row)).filter(quote=>isFreshEligibleBuybackQuote(quote,now,maxAgeMinutes));}
   private async query(where: string, value: string, onePerProvider: boolean): Promise<BuybackQuote[]> {
     const rows = (await this.db.prepare(`SELECT * FROM buyback_quotes WHERE ${where} ORDER BY fetched_at DESC`).bind(value).all<Row>()).results;
     const seen = new Set<string>();

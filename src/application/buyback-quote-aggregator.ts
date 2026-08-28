@@ -1,6 +1,8 @@
 import type {BuybackQuote} from "../domain";
+import {BUYBACK_MAX_AGE_MINUTES,isFreshEligibleBuybackQuote} from "../domain";
 
-export const BUYBACK_FRESHNESS_MS = 3 * 60 * 60 * 1000;
+export const BUYBACK_FRESHNESS_MS = BUYBACK_MAX_AGE_MINUTES * 60 * 1000;
+export {BUYBACK_MAX_AGE_MINUTES};
 
 export type RankedBuyback = {price:number; provider:string; quote:BuybackQuote};
 export type BuybackQuoteAggregate = {
@@ -12,9 +14,7 @@ export type BuybackQuoteAggregate = {
 };
 
 export function isEligibleFreshBuybackQuote(quote:BuybackQuote, now=new Date(), freshnessMs=BUYBACK_FRESHNESS_MS):boolean {
-  const fetched=Date.parse(quote.fetchedAt);
-  return quote.condition==="new" && quote.buybackStatus==="accepting" && quote.price>0 && Boolean(quote.productId)
-    && Number.isFinite(fetched) && fetched<=now.getTime() && fetched>=now.getTime()-freshnessMs;
+  return isFreshEligibleBuybackQuote(quote,now,freshnessMs/60_000);
 }
 
 export function aggregateBuybackQuotes(quotes:BuybackQuote[],now=new Date(),freshnessMs=BUYBACK_FRESHNESS_MS):BuybackQuoteAggregate|null {

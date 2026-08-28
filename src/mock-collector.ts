@@ -5,7 +5,7 @@ export class MockCollector implements Collector {
     const capturedAt = at.toISOString();
     const hour = Math.floor(at.getTime() / 3_600_000);
     const wobble = (hour % 5) * 250;
-    const common = { shippingYen: 0, feeYen: 0, rewardYen: 0, stock: 1, condition: "new" as const, capturedAt, brand:"Apple", category:"smartphone" };
+    const common = { shippingYen: 0, feeYen: 0, rewardYen: 0, stock: 1, stockStatus:"in_stock" as const, purchasable:true, url:"https://example.test/mock-listing", condition: "new" as const, capturedAt, brand:"Apple", category:"smartphone" };
     return [
       { ...common, source:"mock-shop", externalId:"iphone15-128-buy", side:"purchase", title:"Apple iPhone 15 128GB", priceYen:100000+wobble, gtin:"4549995420000", manufacturerPartNumber:"MTP03J/A", model:"iPhone 15", capacity:"128GB", variant:"128GB", raw:{fixture:true}},
       { ...common, source:"mock-kaitori-a", externalId:"iphone15-128-sell-a", side:"buyback", title:"iPhone 15 128GB 買取", priceYen:108000-wobble, gtin:"4549995420000", manufacturerPartNumber:"MTP03J/A", model:"iPhone 15", capacity:"128GB", variant:"128GB", raw:{fixture:true}},
