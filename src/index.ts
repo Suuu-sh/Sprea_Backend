@@ -2,7 +2,7 @@ import { MockCollector } from "./mock-collector";
 import { runPipeline } from "./pipeline";
 import type { Collector } from "./types";
 
-const cors={"access-control-allow-origin":"https://sprea-frontend.pages.dev","access-control-allow-methods":"GET,POST,OPTIONS","access-control-allow-headers":"authorization,content-type"};
+const cors={"access-control-allow-origin":"*","access-control-allow-methods":"GET,POST,OPTIONS","access-control-allow-headers":"authorization,content-type"};
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json",...cors}});
 const authorized=(r:Request,e:Env)=>!e.ADMIN_TOKEN||r.headers.get("authorization")===`Bearer ${e.ADMIN_TOKEN}`;
 const emptyCollector:Collector={collect:async()=>[]};
