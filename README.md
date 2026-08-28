@@ -119,6 +119,7 @@ D1/R2 bindingには実行時credentialは不要です。GitHubには次のReposi
 - `POST /admin/run` — `ADMIN_TOKEN` Bearer認証必須。Mock専用
 - `POST /admin/collect` — `ADMIN_TOKEN` Bearer認証必須。本番の公式API Collectorを即時実行
 - `POST /api/ingest/listings` — `INGEST_API_KEY` Bearer認証必須。最大500件、source単位
+- `GET /api/ingest/targets?limit=100` — `INGEST_API_KEY` Bearer認証必須。外部買取Collector向けの在庫あり販売JAN
 - `GET /api/research/dashboard`
 - `GET /api/research/products/:canonicalKey` — 商品属性・全価格履歴・判断・評価
 - `GET /api/research/paper-trades`
