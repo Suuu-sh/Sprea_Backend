@@ -1,6 +1,7 @@
 data/
 *.db
 .env*
+.dev.vars
 !.env.example
 !.dev.vars.example
 node_modules/
