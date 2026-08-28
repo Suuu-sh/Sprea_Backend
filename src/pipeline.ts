@@ -39,6 +39,10 @@ async function createOpportunities(db: D1Database, at: Date): Promise<{created:n
     if (!res.meta.changes) continue; created++;
     const opp=await db.prepare("SELECT id FROM opportunities WHERE fingerprint=?").bind(fingerprint).first<{id:number}>();
     if(decision==="BUY") {
+      const existingPosition=await db.prepare(`SELECT 1 present FROM paper_trades t
+        JOIN opportunities held ON held.id=t.opportunity_id
+        WHERE held.product_id=? AND t.status='OPEN' LIMIT 1`).bind(p.product_id).first();
+      if(existingPosition) continue;
       const account=await db.prepare("SELECT available_cash_yen FROM paper_accounts WHERE id=1").first<{available_cash_yen:number}>();
       if(account && account.available_cash_yen>=p.buy_cost) {
         await db.batch([
