@@ -54,7 +54,9 @@ export class ImportBuybackQuotes {
         fetchedAt: new Date(String(raw.fetchedAt)).toISOString(), lastSeenAt: now,
       };
       const match = await this.resolver.resolve(quote);
-      if (match.matched) quote.productId = match.productId;
+      if (match.matched) quote.productId = match.matchedProductId;
+      quote.matchConfidence = match.confidence;
+      quote.matchReason = match.reason;
       await this.repository.upsertLatest(quote);
       results.push({index, accepted: true, id: quote.id, match});
     }

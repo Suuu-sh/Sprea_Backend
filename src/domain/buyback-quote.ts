@@ -33,4 +33,6 @@ export type BuybackQuote = {
   productUrl?: string;
   fetchedAt: string;
   lastSeenAt: string;
+  matchConfidence?: number;
+  matchReason?: string;
 };
