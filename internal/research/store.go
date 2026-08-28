@@ -152,6 +152,10 @@ func (s *Store) SaveDecisions(ctx context.Context, opportunities []Opportunity, 
 }
 
 func (s *Store) EvaluateDecisions(ctx context.Context, now time.Time, targetProfit int) ([]Evaluation, error) {
+	settings, err := s.GetResearchSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,canonical_key,decision,purchase_price,purchase_shipping,sale_shipping,fees,decided_at FROM research_decisions`)
 	if err != nil {
 		return nil, err
@@ -185,7 +189,7 @@ func (s *Store) EvaluateDecisions(ctx context.Context, now time.Time, targetProf
 		if e != nil {
 			return nil, e
 		}
-		for _, h := range []int{24, 48, 72, 168} {
+		for _, h := range settings.EvaluationHours {
 			due := decided.Add(time.Duration(h) * time.Hour)
 			if now.Before(due) {
 				continue
@@ -401,6 +405,10 @@ func (s *Store) OpenTrades(ctx context.Context, opportunities []Opportunity, ini
 }
 
 func (s *Store) EvaluateDue(ctx context.Context, now time.Time, saleShipping, fees, targetProfit int) ([]Evaluation, error) {
+	settings, err := s.GetResearchSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,canonical_key,locked_capital,opened_at FROM paper_trades`)
 	if err != nil {
 		return nil, err
@@ -434,7 +442,7 @@ func (s *Store) EvaluateDue(ctx context.Context, now time.Time, saleShipping, fe
 		if e != nil {
 			return nil, e
 		}
-		for _, h := range []int{24, 48, 72, 168} {
+		for _, h := range settings.EvaluationHours {
 			due := opened.Add(time.Duration(h) * time.Hour)
 			if now.Before(due) {
 				continue

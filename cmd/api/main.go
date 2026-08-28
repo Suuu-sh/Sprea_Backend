@@ -42,8 +42,7 @@ func main() {
 						_, _ = researchStore.AdvanceMockMarket(context.Background(), 1)
 						continue
 					}
-					_, _ = researchStore.EvaluateDue(context.Background(), now, 1000, 0, 5000)
-					_, _ = researchStore.EvaluateDecisions(context.Background(), now, 5000)
+					_, _ = researchStore.RunEvaluator(context.Background(), "scheduler", now)
 				}
 			}
 		}()

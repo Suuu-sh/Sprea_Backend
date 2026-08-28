@@ -202,6 +202,14 @@ func (s *Store) ClosePaperTrade(ctx context.Context, id int64, at time.Time) (Pa
 }
 
 func (s *Store) EvaluationSchedules(ctx context.Context) ([]EvaluationSchedule, error) {
+	settings, err := s.GetResearchSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	enabled := map[int]bool{}
+	for _, h := range settings.EvaluationHours {
+		enabled[h] = true
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.canonical_key,d.title,h.hours,datetime(d.decided_at,'+'||h.hours||' hours'),CASE WHEN e.decision_id IS NULL THEN 'pending' ELSE 'completed' END,COALESCE(e.outcome,''),COALESCE(e.profit,0) FROM research_decisions d CROSS JOIN (SELECT 24 hours UNION ALL SELECT 48 UNION ALL SELECT 72 UNION ALL SELECT 168) h LEFT JOIN decision_evaluations e ON e.decision_id=d.id AND e.horizon_hours=h.hours ORDER BY 5`)
 	if err != nil {
 		return nil, err
@@ -215,6 +223,9 @@ func (s *Store) EvaluationSchedules(ctx context.Context) ([]EvaluationSchedule, 
 			return nil, err
 		}
 		x.DueAt, _ = time.Parse("2006-01-02 15:04:05", raw)
+		if !enabled[x.HorizonHours] {
+			continue
+		}
 		out = append(out, x)
 	}
 	return out, rows.Err()
@@ -226,8 +237,12 @@ func (s *Store) RunEvaluator(ctx context.Context, trigger string, now time.Time)
 		return x, err
 	}
 	x.ID, _ = res.LastInsertId()
-	a, e1 := s.EvaluateDue(ctx, now, 1000, 0, 5000)
-	b, e2 := s.EvaluateDecisions(ctx, now, 5000)
+	settings, settingsErr := s.GetResearchSettings(ctx)
+	if settingsErr != nil {
+		return x, settingsErr
+	}
+	a, e1 := s.EvaluateDue(ctx, now, settings.SaleShipping, settings.Fees, settings.MinimumProfit)
+	b, e2 := s.EvaluateDecisions(ctx, now, settings.MinimumProfit)
 	x.EvaluatedCount = len(a) + len(b)
 	x.FinishedAt = time.Now().UTC()
 	if e1 != nil || e2 != nil {
