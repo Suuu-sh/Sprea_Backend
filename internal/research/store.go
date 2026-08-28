@@ -80,7 +80,9 @@ func (s *Store) migrate() error {
 	CREATE TABLE IF NOT EXISTS source_policies (
 	 source TEXT PRIMARY KEY, method TEXT NOT NULL, terms_url TEXT NOT NULL, robots_url TEXT NOT NULL,
 	 status TEXT NOT NULL, reviewed_at TEXT NOT NULL, notes TEXT NOT NULL);
-	CREATE TABLE IF NOT EXISTS mock_market_clock (id INTEGER PRIMARY KEY CHECK(id=1), current_at TEXT NOT NULL, elapsed_hours INTEGER NOT NULL);`)
+	CREATE TABLE IF NOT EXISTS mock_market_clock (id INTEGER PRIMARY KEY CHECK(id=1), current_at TEXT NOT NULL, elapsed_hours INTEGER NOT NULL);
+	CREATE TABLE IF NOT EXISTS mock_market_control (id INTEGER PRIMARY KEY CHECK(id=1), scenario TEXT NOT NULL DEFAULT 'stable', auto_advance INTEGER NOT NULL DEFAULT 0);
+	INSERT OR IGNORE INTO mock_market_control(id,scenario,auto_advance) VALUES(1,'stable',0);`)
 	return err
 }
 

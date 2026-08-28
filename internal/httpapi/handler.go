@@ -51,6 +51,8 @@ func New(s *service.Opportunities, repo port.OpportunityRepository, market port.
 	mux.HandleFunc("POST /api/research/reality", h.recordReality)
 	mux.HandleFunc("GET /api/research/mock-market", h.mockMarketStatus)
 	mux.HandleFunc("POST /api/research/mock-market/advance", h.advanceMockMarket)
+	mux.HandleFunc("PUT /api/research/mock-market", h.configureMockMarket)
+	mux.HandleFunc("POST /api/research/mock-market/reset", h.resetMockMarket)
 	return cors(mux)
 }
 
@@ -81,6 +83,38 @@ func (h *Handler) advanceMockMarket(w http.ResponseWriter, r *http.Request) {
 	x, err := h.research.AdvanceMockMarket(r.Context(), body.Hours)
 	if err != nil {
 		writeError(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) configureMockMarket(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(os.Getenv("SPREA_ENV"), "production") {
+		writeJSON(w, 403, map[string]string{"error": "mock market is disabled in production"})
+		return
+	}
+	var body struct {
+		Scenario    string `json:"scenario"`
+		AutoAdvance bool   `json:"autoAdvance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x, err := h.research.ConfigureMockMarket(r.Context(), body.Scenario, body.AutoAdvance)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) resetMockMarket(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(os.Getenv("SPREA_ENV"), "production") {
+		writeJSON(w, 403, map[string]string{"error": "mock market is disabled in production"})
+		return
+	}
+	x, err := h.research.ResetMockMarket(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
 		return
 	}
 	writeJSON(w, 200, x)

@@ -37,6 +37,11 @@ func main() {
 			for range ticker.C {
 				now, _, e := researchStore.MockClock(context.Background())
 				if e == nil {
+					_, auto, _ := researchStore.MockControl(context.Background())
+					if auto {
+						_, _ = researchStore.AdvanceMockMarket(context.Background(), 1)
+						continue
+					}
 					_, _ = researchStore.EvaluateDue(context.Background(), now, 1000, 0, 5000)
 					_, _ = researchStore.EvaluateDecisions(context.Background(), now, 5000)
 				}

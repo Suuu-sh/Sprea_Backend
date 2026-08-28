@@ -13,11 +13,17 @@ type MockMarketStatus struct {
 	ElapsedHours int          `json:"elapsedHours"`
 	NextDueAt    *time.Time   `json:"nextDueAt,omitempty"`
 	Evaluations  []Evaluation `json:"evaluations"`
+	Scenario     string       `json:"scenario"`
+	AutoAdvance  bool         `json:"autoAdvance"`
 }
 
 var mockBaseTime = time.Date(2026, 8, 27, 17, 0, 0, 0, time.UTC)
 
 func MockObservations(at time.Time, elapsed int) []Observation {
+	return mockObservationsForScenario(at, elapsed, "stable")
+}
+
+func mockObservationsForScenario(at time.Time, elapsed int, scenario string) []Observation {
 	price := func(base int, drops ...int) int {
 		v := base
 		for i, h := range []int{24, 48, 72, 168} {
@@ -34,6 +40,20 @@ func MockObservations(at time.Time, elapsed int) []Observation {
 	products := []product{
 		{"4900000000001", "MG854J/A", "256GB", "Silver", "Apple iPhone 17 Pro 256GB Silver local mock", 178000, price(188000, 187000, 183000, 178000, 175000), price(186000, 185000, 181000, 177000, 174000)},
 		{"4900000000002", "MCA14J/A", "128GB", "Blue", "Apple iPad Air 128GB Blue local mock", 85000, price(92000, 92500, 93000, 91500, 87000), price(90000, 91000, 92000, 90500, 86500)},
+	}
+	if scenario == "crash" {
+		products[0].buybackA = price(188000, 176000, 168000, 160000, 150000)
+		products[0].buybackB = price(186000, 174000, 166000, 158000, 149000)
+	}
+	if scenario == "recovery" {
+		products[0].buybackA = price(188000, 174000, 181000, 190000, 192000)
+		products[0].buybackB = price(186000, 172000, 179000, 188000, 190000)
+	}
+	if scenario == "top_store_loss" && elapsed >= 48 {
+		products[0].buybackA = 0
+	}
+	if scenario == "stockout" && elapsed >= 24 {
+		products[0].purchase = 0
 	}
 	out := make([]Observation, 0, 6)
 	for i, p := range products {
@@ -74,8 +94,12 @@ func (s *Store) AdvanceMockMarket(ctx context.Context, hours int) (MockMarketSta
 	if _, err = s.db.ExecContext(ctx, `INSERT INTO mock_market_clock(id,current_at,elapsed_hours) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET current_at=excluded.current_at,elapsed_hours=excluded.elapsed_hours`, now.Format(time.RFC3339Nano), elapsed); err != nil {
 		return MockMarketStatus{}, err
 	}
+	scenario, _, err := s.MockControl(ctx)
+	if err != nil {
+		return MockMarketStatus{}, err
+	}
 	p := Pipeline{Store: s, InitialCapital: 300000, MinimumProfit: 5000, MinimumConfidence: .95, SaleShipping: 1000}
-	if _, err = p.Run(ctx, MockObservations(now, elapsed), now); err != nil {
+	if _, err = p.Run(ctx, mockObservationsForScenario(now, elapsed, scenario), now); err != nil {
 		return MockMarketStatus{}, err
 	}
 	return s.MockMarketStatus(ctx)
@@ -113,7 +137,49 @@ func (s *Store) MockMarketStatus(ctx context.Context) (MockMarketStatus, error) 
 			next = &t
 		}
 	}
-	return MockMarketStatus{CurrentAt: now, ElapsedHours: elapsed, NextDueAt: next, Evaluations: evaluations}, nil
+	scenario, auto, err := s.MockControl(ctx)
+	if err != nil {
+		return MockMarketStatus{}, err
+	}
+	return MockMarketStatus{CurrentAt: now, ElapsedHours: elapsed, NextDueAt: next, Evaluations: evaluations, Scenario: scenario, AutoAdvance: auto}, nil
+}
+
+func (s *Store) MockControl(ctx context.Context) (string, bool, error) {
+	var scenario string
+	var auto bool
+	err := s.db.QueryRowContext(ctx, `SELECT scenario,auto_advance FROM mock_market_control WHERE id=1`).Scan(&scenario, &auto)
+	return scenario, auto, err
+}
+func (s *Store) ConfigureMockMarket(ctx context.Context, scenario string, auto bool) (MockMarketStatus, error) {
+	switch scenario {
+	case "stable", "crash", "recovery", "stockout", "top_store_loss":
+	default:
+		return MockMarketStatus{}, fmt.Errorf("invalid scenario")
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE mock_market_control SET scenario=?,auto_advance=? WHERE id=1`, scenario, auto)
+	if err != nil {
+		return MockMarketStatus{}, err
+	}
+	return s.MockMarketStatus(ctx)
+}
+func (s *Store) ResetMockMarket(ctx context.Context) (MockMarketStatus, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return MockMarketStatus{}, err
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"decision_evaluations", "trade_evaluations", "paper_trades", "research_decisions", "opportunity_features", "research_opportunities", "research_observations"} {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM "+table); err != nil {
+			return MockMarketStatus{}, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO mock_market_clock(id,current_at,elapsed_hours) VALUES(1,?,0) ON CONFLICT(id) DO UPDATE SET current_at=excluded.current_at,elapsed_hours=0`, mockBaseTime.Format(time.RFC3339Nano)); err != nil {
+		return MockMarketStatus{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return MockMarketStatus{}, err
+	}
+	return s.AdvanceMockMarket(ctx, 0)
 }
 
 func (s *Store) ListDecisionEvaluations(ctx context.Context, limit int) ([]Evaluation, error) {
