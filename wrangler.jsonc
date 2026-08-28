@@ -15,5 +15,5 @@
     "bucket_name": "sprea-models",
     "preview_bucket_name": "sprea-models-preview"
   }],
-  "vars": { "COLLECTOR_MODE": "mock" }
+  "vars": { "COLLECTOR_MODE": "disabled" }
 }

@@ -42,7 +42,7 @@ go run ./cmd/research
 
 ## Cloudflare Research v1
 
-個人利用専用の価格差研究基盤です。Cloudflare Worker が Mock Collector から一周を実行し、D1 に商品、価格履歴、Opportunity、30万円の Paper Trading、24h/48h/72h/7d 評価を保存します。Python/LightGBM は毎日 GitHub Actions で学習・バックテストし、厳しい昇格条件を通ったモデルだけを R2 に保存します。
+個人利用専用の価格差研究基盤です。本番環境ではMock Collectorを無効化し、承認済みの実データだけを扱います。ローカルテストではMock Collectorから一周を実行できます。D1 に商品、価格履歴、Opportunity、30万円の Paper Trading、24h/48h/72h/7d 評価を保存します。Python/LightGBM は毎日 GitHub Actions で学習・バックテストし、厳しい昇格条件を通ったモデルだけを R2 に保存します。
 
 ## 処理の流れ
 
