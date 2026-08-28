@@ -14,5 +14,8 @@ def promotable(candidate, incumbent=None, min_precision=.80, min_selected=3):
 
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--candidate",required=True);p.add_argument("--incumbent")
-    a=p.parse_args(); c=json.loads(Path(a.candidate).read_text()); i=json.loads(Path(a.incumbent).read_text()) if a.incumbent and Path(a.incumbent).exists() else None
+    a=p.parse_args(); c=json.loads(Path(a.candidate).read_text()); i=None
+    if a.incumbent and Path(a.incumbent).exists() and Path(a.incumbent).stat().st_size:
+      try: i=json.loads(Path(a.incumbent).read_text())
+      except json.JSONDecodeError: i=None
     result=promotable(c,i);print(json.dumps({"promote":result}));raise SystemExit(0 if result else 2)

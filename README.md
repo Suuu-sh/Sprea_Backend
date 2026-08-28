@@ -1,44 +1,6 @@
-# Sprea Backend
+# Sprea Research v1
 
-Spreaの価格収集、商品照合、利益計算、履歴・通知APIです。現在の優先実装は、個人利用専用の **Sprea Research v1** です。
-
-Research v1 の Collector → Product Resolver → Price History → Opportunity Engine → 30万円 Paper Trader → 24h/48h/72h Evaluator は [`docs/research-v1.md`](docs/research-v1.md) を参照してください。
-
-## ローカル起動
-
-```bash
-cp .env.example .env
-# 必要な値を設定してから
-set -a; source .env; set +a
-go run ./cmd/api
-```
-
-ローカルCollectorはネットワークへ接続せず、明示的なモックデータだけを使います:
-
-```bash
-SPREA_ENV=local SPREA_COLLECTOR_MODE=mock SPREA_DRY_RUN=true go run ./cmd/collector
-```
-
-本番だけ `SPREA_ENV=production` と `SPREA_COLLECTOR_MODE=live` を設定し、公式APIの実データを取得します。環境とモードが食い違う場合は安全のため起動に失敗します。
-
-Research v1 のローカル縦切り:
-
-```bash
-go run ./cmd/research
-```
-
-## 構成
-
-- Go API + SQLite: ローカル開発
-- 楽天市場Collector: `internal/collector/rakuten`
-- 商品照合: `internal/matcher`
-- 利益計算: `internal/profit`
-- Cloudflare Workers + D1: `infra/worker`
-- 毎時収集: `.github/workflows/collector.yml`
-
-本番設定は [`docs/production.md`](docs/production.md) を参照してください。
-
----
+Spreaの現行実装は、個人利用専用の **Cloudflare Workers + D1 + R2** 価格差研究基盤です。バックエンドはTypeScriptのResearch Workerへ統一しています。
 
 ## Cloudflare Research v1
 
@@ -55,11 +17,17 @@ go run ./cmd/research
 - 現行モデルがある場合、Precisionと平均利益がともに向上し、最大損失が悪化しない場合だけ昇格
 - Worker は当面 rule baseline で判断します。R2のLightGBM text artifactは学習ライフサイクル検証用で、Workerで直接推論しているとは扱いません。
 
-実サイト用Collectorは `Collector` interfaceを実装して追加できますが、公式API・利用規約・robots.txtを個別確認するまで有効化しません。
+実サイト用Collectorは `Collector` interfaceで分離しています。購入側は公式の楽天市場商品検索APIとYahoo!ショッピング商品検索APIだけを利用し、HTMLスクレイピングは行いません。買取側の外部CollectorはPublicな [sprea-collectors](https://github.com/Suuu-sh/sprea-collectors) に分離しています。買取1丁目・森森買取・イオシスは規約または明示的な自動取得許可を確認できていないためfail-closedで無効です。許可済み公式API/feedを得るまで本番データとして実行しません。
+
+公式APIのレスポンスだけでは送料額を確定できないため、送料無料と明示された新品・在庫あり商品だけを採用します。また、誤照合防止のためApple型番と容量をタイトルから確定できない商品は保存しません。ポイントはログイン状態やキャンペーンに依存し得るため、v1では確実な還元として計上しません。
+
+- [楽天市場商品検索API（2026-07-01）](https://webservice.rakuten.co.jp/documentation/ichiba-item-search)
+- [Rakuten Web Service 利用規約](https://webservice.rakuten.co.jp/guide/rule)
+- [Yahoo!ショッピング 商品検索 v3](https://developer.yahoo.co.jp/webapi/shopping/v3/itemsearch.html)
 
 ## ローカル実行
 
-Node.js 22、Python 3.12、SQLite CLIを用意します。
+Node.js 22、Python 3.12、SQLite CLIを用意します。通常のローカル実行は外部通信しないモックです。
 
 ```bash
 npm ci
@@ -73,11 +41,36 @@ npm run dev
 ```bash
 curl -X POST http://localhost:8787/admin/run \
   -H 'Authorization: Bearer replace-with-a-long-random-value'
-curl http://localhost:8787/api/portfolio
-curl 'http://localhost:8787/api/metrics?horizon=48'
+curl http://localhost:8787/api/portfolio \
+  -H 'Authorization: Bearer replace-with-a-long-random-value'
+curl 'http://localhost:8787/api/metrics?horizon=48' \
+  -H 'Authorization: Bearer replace-with-a-long-random-value'
 ```
 
-Cronは15分ごと（UTC）です。同じ時刻の再実行では価格・取引・評価を重複させません。Evaluatorは各期限以後で最初の売却価格を使います。
+実CollectorはWorker内でスクレイピングせず、規約確認済みの公式APIやfeedを別プロセスで取得して、共通listing契約へ変換します。送信先は認証必須の `POST /api/ingest/listings` です。
+
+```bash
+curl -X POST http://localhost:8787/api/ingest/listings \
+  -H 'Authorization: Bearer replace-with-a-separate-long-random-value' \
+  -H 'Content-Type: application/json' \
+  --data '{
+    "runId":"official-feed-20260828T030000Z",
+    "source":"official-feed",
+    "listings":[{
+      "source":"official-feed","sourceType":"retailer","externalId":"sku-123",
+      "productName":"Camera X Body","jan":"4900000000001",
+      "modelNumber":"CAM-X-BODY","brand":"Maker","category":"camera","condition":"new",
+      "attributes":{"kitType":"Body","color":"Black"},
+      "price":80000,"shippingFee":0,"fee":0,"reward":0,"stock":1,
+      "productUrl":"https://partner.example/items/sku-123",
+      "fetchedAt":"2026-08-28T03:00:00.000Z"
+    }]
+  }'
+```
+
+ResolverはPrecisionを優先し、GTIN完全一致、メーカー型番完全一致、またはbrand/model/variantの完全一致だけを受理します。曖昧なタイトル類似だけでは商品を作りません。`latest_prices` は毎回更新され、価格・送料・手数料・還元・在庫のいずれかが変化したときだけ履歴snapshotを追加します。同一商品の複数買取店を保持し、最高値、次点価格、店舗数、価格差、解決信頼度からSprea Scoreを計算します。
+
+Cloudflare Cronは15分ごと（UTC）です。同じ時刻の再実行では価格・取引・評価を重複させません。Evaluatorは各期限以後で最初の売却価格を使います。GitHub Actionsから別のCollectorを定期実行する経路は設けません。
 
 ## テスト
 
@@ -102,7 +95,16 @@ python ml/promote.py --candidate artifacts/candidate/metrics.json --incumbent ar
 1. `wrangler d1 create sprea-research` と `wrangler r2 bucket create sprea-models` を実行
 2. `wrangler.jsonc` の `REPLACE_WITH_D1_DATABASE_ID` を発行されたIDに置換
 3. `wrangler secret put ADMIN_TOKEN` で長いランダム値を登録
-4. `npx wrangler d1 migrations apply DB --remote`、`npm run deploy`
+4. `wrangler secret put INGEST_API_KEY` でCollector専用の別tokenを登録
+5. `ALLOWED_ORIGIN` を許可するFrontend originへ設定
+6. `npx wrangler d1 migrations apply DB --remote`、`npm run deploy`
+
+公式Collectorを有効にする場合は `SPREA_ENV=production` と `SPREA_COLLECTOR_SOURCE=rakuten` または `yahoo` をWorker varsへ設定し、必要な値を `wrangler secret put` で登録します。
+
+- 楽天: `RAKUTEN_APPLICATION_ID`、`RAKUTEN_ACCESS_KEY`（任意var: `RAKUTEN_KEYWORD`）
+- Yahoo!: `YAHOO_CLIENT_ID`（任意var: `YAHOO_QUERY`）
+
+`SPREA_COLLECTOR_SOURCE=mock` はproductionで起動時に拒否されます。楽天のAccess KeyはHTTP headerで送り、ログやURLへ含めません。Yahoo!のClient IDと楽天Application IDは各公式仕様どおりquery parameterへ入るため、リクエストURLをログ出力しないでください。
 
 D1/R2 bindingには実行時credentialは不要です。GitHubには次のRepository Secretsだけを登録します。
 
@@ -114,8 +116,21 @@ D1/R2 bindingには実行時credentialは不要です。GitHubには次のReposi
 ## API
 
 - `GET /health`
-- `POST /admin/run` — `ADMIN_TOKEN`が設定されている場合Bearer認証必須
+- `POST /admin/run` — `ADMIN_TOKEN` Bearer認証必須。Mock専用
+- `POST /admin/collect` — `ADMIN_TOKEN` Bearer認証必須。本番の公式API Collectorを即時実行
+- `POST /api/ingest/listings` — `INGEST_API_KEY` Bearer認証必須。最大500件、source単位
+- `GET /api/research/dashboard`
+- `GET /api/research/products/:canonicalKey` — 商品属性・全価格履歴・判断・評価
+- `GET /api/research/paper-trades`
+- `POST /api/research/paper-trades/:id/close` — `ADMIN_TOKEN` Bearer認証必須
+- `GET /api/research/settings`
+- `PUT /api/research/settings` — `ADMIN_TOKEN` Bearer認証必須
+- `GET /api/research/evaluator`
+- `POST /api/research/evaluator/run` — `ADMIN_TOKEN` Bearer認証必須
+- `GET /api/collector/status?limit=20`
 - `GET /api/portfolio`
 - `GET /api/metrics?horizon=48`
 
-公開サービスではありません。本番では必ず`ADMIN_TOKEN`を設定し、必要ならCloudflare Accessも追加してください。
+`/health` と ingest endpoint を除く全APIは `ADMIN_TOKEN` Bearer認証必須です。ingest endpointだけは権限を分離した `INGEST_API_KEY` を使います。
+
+公開サービスではありません。本番では`ADMIN_TOKEN`と`INGEST_API_KEY`を別々の十分に長い乱数にし、必要ならCloudflare Accessも追加してください。認証値をquery parameterやlistingの`raw`へ入れないでください。

@@ -1,2 +1,6 @@
 # Copy to .dev.vars. Never commit the real file.
 ADMIN_TOKEN=replace-with-a-long-random-value
+INGEST_API_KEY=replace-with-a-separate-long-random-value
+ALLOWED_ORIGIN=http://localhost:3000
+SPREA_ENV=local
+SPREA_COLLECTOR_SOURCE=mock

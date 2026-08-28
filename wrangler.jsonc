@@ -15,5 +15,11 @@
     "bucket_name": "sprea-models",
     "preview_bucket_name": "sprea-models-preview"
   }],
-  "vars": { "COLLECTOR_MODE": "disabled" }
+  "vars": {
+    "COLLECTOR_MODE": "live",
+    "SPREA_ENV": "production",
+    "SPREA_COLLECTOR_SOURCE": "yahoo",
+    "ALLOWED_ORIGIN": "https://sprea-frontend.pages.dev",
+    "YAHOO_QUERY": "Apple 新品 J/A 128GB"
+  }
 }

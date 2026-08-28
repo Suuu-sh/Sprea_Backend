@@ -10,14 +10,23 @@ FEATURES = ["buy_cost_yen", "market_profit_yen", "resolver_confidence"]
 
 def load_rows(db_path: str) -> pd.DataFrame:
     sql = """SELECT o.id,o.detected_at,o.buy_cost_yen,o.market_profit_yen,o.resolver_confidence,
-      e.realized_profit_yen,(e.realized_profit_yen>=5000) label
-      FROM opportunities o JOIN evaluations e ON e.opportunity_id=o.id AND e.horizon_hours=48
-      WHERE e.realized_profit_yen IS NOT NULL ORDER BY o.detected_at,o.id"""
+      e.profit_yen realized_profit_yen,(e.profit_yen>=5000) label
+      FROM research_opportunities o JOIN research_evaluations e ON e.opportunity_id=o.id AND e.horizon_hours=48
+      WHERE e.profit_yen IS NOT NULL ORDER BY o.detected_at,o.id"""
     with sqlite3.connect(db_path) as conn: return pd.read_sql_query(sql, conn)
 
-def chronological_split(df: pd.DataFrame):
-    n=len(df); a=max(1,int(n*.6)); b=max(a+1,int(n*.8))
-    return df.iloc[:a],df.iloc[a:b],df.iloc[b:]
+def chronological_split(df: pd.DataFrame, embargo_hours: int = 48):
+    """Time split with a label-horizon embargo before validation and test."""
+    ordered=df.sort_values(["detected_at", "id"]).reset_index(drop=True).copy()
+    ordered["_detected"]=pd.to_datetime(ordered.detected_at, utc=True)
+    n=len(ordered); a=max(1,int(n*.6)); b=max(a+1,int(n*.8))
+    val_start=ordered.iloc[a]["_detected"]
+    test_start=ordered.iloc[b]["_detected"]
+    gap=pd.Timedelta(hours=embargo_hours)
+    train_df=ordered[ordered._detected < val_start-gap]
+    val_df=ordered[(ordered._detected >= val_start) & (ordered._detected < test_start-gap)]
+    test_df=ordered[ordered._detected >= test_start]
+    return tuple(x.drop(columns=["_detected"]) for x in (train_df,val_df,test_df))
 
 def metrics(y, profit, probability, threshold):
     selected=np.asarray(probability)>=threshold; y=np.asarray(y).astype(bool); profit=np.asarray(profit)
@@ -45,7 +54,7 @@ def train(db_path: str, out: Path):
     model.fit(train_df[FEATURES],train_df.label)
     threshold=choose_threshold(val_df.label,val_df.realized_profit_yen,model.predict_proba(val_df[FEATURES])[:,1])
     report=metrics(test_df.label,test_df.realized_profit_yen,model.predict_proba(test_df[FEATURES])[:,1],threshold)
-    report.update({"threshold":threshold,"samples":len(df),"test_samples":len(test_df),"features":FEATURES,"label":"48h_market_profit_yen >= 5000"})
+    report.update({"threshold":threshold,"samples":len(df),"test_samples":len(test_df),"features":FEATURES,"label":"48h_market_profit_yen >= 5000","embargo_hours":48})
     out.mkdir(parents=True,exist_ok=True); model.booster_.save_model(str(out/"model.txt"))
     (out/"metrics.json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
     (out/"manifest.json").write_text(json.dumps({"format":"lightgbm-text","runtime":"training-artifact-only","threshold":threshold,"features":FEATURES},indent=2)+"\n")

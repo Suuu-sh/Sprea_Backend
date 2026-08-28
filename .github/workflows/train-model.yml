@@ -38,3 +38,27 @@ jobs:
           printf '{"version":"%s","prefix":"models/%s"}\n' "$VERSION" "$VERSION" > /tmp/current.json
           npx wrangler r2 object put sprea-models/models/current-metrics.json --file /tmp/current-metrics.json --remote
           npx wrangler r2 object put sprea-models/models/current.json --file /tmp/current.json --remote
+      - name: Audit promoted model in D1
+        if: steps.gate.outcome == 'success'
+        env: { MODEL_STATUS: promoted }
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          version=f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          metrics=pathlib.Path("artifacts/candidate/metrics.json").read_text().replace("'", "''")
+          sql=f"INSERT INTO research_model_runs(version,status,artifact_key,metrics_json,created_at,promoted_at) VALUES('{version}','promoted','models/{version}','{metrics}',datetime('now'),datetime('now')) ON CONFLICT(version) DO UPDATE SET status='promoted',metrics_json=excluded.metrics_json,promoted_at=excluded.promoted_at;"
+          pathlib.Path("/tmp/model-audit.sql").write_text(sql)
+          PY
+          npx wrangler d1 execute DB --remote --file /tmp/model-audit.sql
+      - name: Audit rejected model in D1
+        if: steps.gate.outcome != 'success'
+        env: { MODEL_STATUS: rejected }
+        run: |
+          python - <<'PY'
+          import os, pathlib
+          version=f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          metrics=pathlib.Path("artifacts/candidate/metrics.json").read_text().replace("'", "''")
+          sql=f"INSERT INTO research_model_runs(version,status,artifact_key,metrics_json,created_at) VALUES('{version}','rejected','models/{version}','{metrics}',datetime('now')) ON CONFLICT(version) DO UPDATE SET status='rejected',metrics_json=excluded.metrics_json;"
+          pathlib.Path("/tmp/model-audit.sql").write_text(sql)
+          PY
+          npx wrangler d1 execute DB --remote --file /tmp/model-audit.sql
