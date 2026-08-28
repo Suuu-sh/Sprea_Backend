@@ -33,9 +33,9 @@ CREATE TABLE IF NOT EXISTS paper_settlement_ledger (
 CREATE TRIGGER IF NOT EXISTS paper_trade_validate_before_insert
 BEFORE INSERT ON research_paper_trades
 BEGIN
-  SELECT CASE WHEN NEW.canonical_product_id IS NULL THEN RAISE(ABORT,'canonical product required') END;
-  SELECT CASE WHEN EXISTS(SELECT 1 FROM research_paper_trades WHERE canonical_product_id=NEW.canonical_product_id AND status='OPEN') THEN RAISE(ABORT,'open position already exists') END;
-  SELECT CASE WHEN (SELECT available_cash_yen FROM research_paper_accounts WHERE id=1)<NEW.reserved_yen THEN RAISE(ABORT,'insufficient paper cash') END;
+  SELECT (CASE WHEN NEW.canonical_product_id IS NULL THEN RAISE(ABORT,'canonical product required') END);
+  SELECT (CASE WHEN EXISTS(SELECT 1 FROM research_paper_trades WHERE canonical_product_id=NEW.canonical_product_id AND status='OPEN') THEN RAISE(ABORT,'open position already exists') END);
+  SELECT (CASE WHEN (SELECT available_cash_yen FROM research_paper_accounts WHERE id=1)<NEW.reserved_yen THEN RAISE(ABORT,'insufficient paper cash') END);
 END;
 CREATE TRIGGER IF NOT EXISTS paper_trade_debit_after_insert
 AFTER INSERT ON research_paper_trades
@@ -46,7 +46,7 @@ CREATE TRIGGER IF NOT EXISTS paper_trade_settle_after_close
 AFTER UPDATE OF status ON research_paper_trades
 WHEN OLD.status='OPEN' AND NEW.status='CLOSED'
 BEGIN
-  SELECT CASE WHEN NEW.settlement_revenue_yen IS NULL OR NEW.closed_at IS NULL THEN RAISE(ABORT,'settlement details required') END;
+  SELECT (CASE WHEN NEW.settlement_revenue_yen IS NULL OR NEW.closed_at IS NULL THEN RAISE(ABORT,'settlement details required') END);
   INSERT INTO paper_settlement_ledger(trade_id,reserved_yen,revenue_yen,profit_yen,settled_at) VALUES(NEW.id,OLD.reserved_yen,NEW.settlement_revenue_yen,NEW.settlement_revenue_yen-OLD.reserved_yen,NEW.closed_at);
   UPDATE research_paper_accounts SET available_cash_yen=available_cash_yen+NEW.settlement_revenue_yen,reserved_cash_yen=reserved_cash_yen-OLD.reserved_yen,updated_at=NEW.closed_at WHERE id=1;
 END;
@@ -56,7 +56,7 @@ CREATE TRIGGER IF NOT EXISTS research_initial_capital_sync
 AFTER UPDATE OF initial_capital_yen ON research_settings
 WHEN NEW.initial_capital_yen<>OLD.initial_capital_yen
 BEGIN
-  SELECT CASE WHEN (SELECT available_cash_yen FROM research_paper_accounts WHERE id=1)+(NEW.initial_capital_yen-OLD.initial_capital_yen)<0 THEN RAISE(ABORT,'capital below committed amount') END;
+  SELECT (CASE WHEN (SELECT available_cash_yen FROM research_paper_accounts WHERE id=1)+(NEW.initial_capital_yen-OLD.initial_capital_yen)<0 THEN RAISE(ABORT,'capital below committed amount') END);
   UPDATE research_paper_accounts SET initial_cash_yen=NEW.initial_capital_yen,available_cash_yen=available_cash_yen+(NEW.initial_capital_yen-OLD.initial_capital_yen),updated_at=NEW.updated_at WHERE id=1;
 END;
 
