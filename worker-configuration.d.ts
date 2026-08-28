@@ -11,5 +11,6 @@ interface Env {
   RAKUTEN_KEYWORD?: string;
   ADMIN_TOKEN?: string;
   INGEST_API_KEY?: string;
+  SPREA_INGEST_TOKEN?: string;
   ALLOWED_ORIGIN?: string;
 }
