@@ -29,6 +29,8 @@ type Config struct {
 type Product struct {
 	Code, Name, JAN, Model, URL string
 	Price, Shipping             int
+	ShippingCode                int
+	ShippingKnown               bool
 	Stock                       bool
 }
 type Collector struct {
@@ -83,6 +85,7 @@ func (c *Collector) CollectProducts(ctx context.Context) ([]Product, error) {
 	q.Set("appid", c.cfg.ClientID)
 	q.Set("query", c.cfg.Query)
 	q.Set("results", strconv.Itoa(c.cfg.Results))
+	q.Set("condition", "new")
 	u.RawQuery = q.Encode()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	resp, err := c.cfg.HTTPClient.Do(req)
@@ -95,12 +98,12 @@ func (c *Collector) CollectProducts(ctx context.Context) ([]Product, error) {
 	}
 	var body struct {
 		Hits []struct {
-			Name, Code   string
-			Price        int
-			URL          string
-			JANCode      string `json:"janCode"`
-			Shipping     struct{ Code int }
-			Availability string
+			Name, Code string
+			Price      int
+			URL        string
+			JANCode    string `json:"janCode"`
+			Shipping   struct{ Code int }
+			InStock    bool `json:"inStock"`
 		}
 	}
 	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -112,7 +115,8 @@ func (c *Collector) CollectProducts(ctx context.Context) ([]Product, error) {
 		if !isApple(lower) || strings.Contains(lower, "中古") || strings.Contains(lower, "整備済") || strings.Contains(lower, "訳あり") {
 			continue
 		}
-		out = append(out, Product{Code: x.Code, Name: x.Name, JAN: x.JANCode, Model: extractModel(x.Name), URL: x.URL, Price: x.Price, Shipping: shippingPrice(x.Shipping.Code), Stock: x.Availability != "out_of_stock"})
+		shipping, known := shippingPrice(x.Shipping.Code)
+		out = append(out, Product{Code: x.Code, Name: x.Name, JAN: x.JANCode, Model: extractModel(x.Name), URL: x.URL, Price: x.Price, Shipping: shipping, ShippingCode: x.Shipping.Code, ShippingKnown: known, Stock: x.InStock})
 	}
 	return out, nil
 }
@@ -147,9 +151,9 @@ func extractModel(s string) string {
 	}
 	return ""
 }
-func shippingPrice(code int) int {
-	if code == 1 {
-		return 0
+func shippingPrice(code int) (int, bool) {
+	if code == 2 {
+		return 0, true
 	}
-	return 0
+	return 0, false
 }
