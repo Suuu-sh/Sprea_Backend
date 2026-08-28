@@ -79,7 +79,8 @@ func (s *Store) migrate() error {
 	 maximum_loss INTEGER NOT NULL, promoted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
 	CREATE TABLE IF NOT EXISTS source_policies (
 	 source TEXT PRIMARY KEY, method TEXT NOT NULL, terms_url TEXT NOT NULL, robots_url TEXT NOT NULL,
-	 status TEXT NOT NULL, reviewed_at TEXT NOT NULL, notes TEXT NOT NULL);`)
+	 status TEXT NOT NULL, reviewed_at TEXT NOT NULL, notes TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS mock_market_clock (id INTEGER PRIMARY KEY CHECK(id=1), current_at TEXT NOT NULL, elapsed_hours INTEGER NOT NULL);`)
 	return err
 }
 

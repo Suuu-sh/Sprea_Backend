@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"github.com/yota/sprea/backend/internal/httpapi"
 	"github.com/yota/sprea/backend/internal/repository"
 	"github.com/yota/sprea/backend/internal/research"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func main() {
@@ -25,6 +27,22 @@ func main() {
 		log.Fatal(err)
 	}
 	defer researchStore.Close()
+	if os.Getenv("SPREA_ENV") != "production" {
+		if status, e := researchStore.MockMarketStatus(context.Background()); e == nil && status.ElapsedHours == 0 {
+			_, _ = researchStore.AdvanceMockMarket(context.Background(), 0)
+		}
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				now, _, e := researchStore.MockClock(context.Background())
+				if e == nil {
+					_, _ = researchStore.EvaluateDue(context.Background(), now, 1000, 0, 5000)
+					_, _ = researchStore.EvaluateDecisions(context.Background(), now, 5000)
+				}
+			}
+		}()
+	}
 	addr := ":8080"
 	log.Printf("Sprea API listening on http://localhost%s", addr)
 	log.Fatal(http.ListenAndServe(addr, httpapi.New(service.New(repo), repo, repo, os.Getenv("SPREA_INGEST_API_KEY"), researchStore)))

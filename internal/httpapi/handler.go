@@ -10,6 +10,7 @@ import (
 	"github.com/yota/sprea/backend/internal/research"
 	"github.com/yota/sprea/backend/internal/service"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -48,7 +49,41 @@ func New(s *service.Opportunities, repo port.OpportunityRepository, market port.
 	mux.HandleFunc("GET /api/research/metrics", h.researchMetrics)
 	mux.HandleFunc("GET /api/research/dashboard", h.researchDashboard)
 	mux.HandleFunc("POST /api/research/reality", h.recordReality)
+	mux.HandleFunc("GET /api/research/mock-market", h.mockMarketStatus)
+	mux.HandleFunc("POST /api/research/mock-market/advance", h.advanceMockMarket)
 	return cors(mux)
+}
+
+func (h *Handler) mockMarketStatus(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(os.Getenv("SPREA_ENV"), "production") {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	x, err := h.research.MockMarketStatus(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) advanceMockMarket(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(os.Getenv("SPREA_ENV"), "production") {
+		writeJSON(w, 403, map[string]string{"error": "mock market is disabled in production"})
+		return
+	}
+	var body struct {
+		Hours int `json:"hours"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x, err := h.research.AdvanceMockMarket(r.Context(), body.Hours)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, x)
 }
 
 func (h *Handler) researchDashboard(w http.ResponseWriter, r *http.Request) {
