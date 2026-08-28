@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sprea-research",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-08-23",
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "sprea-research",
+    "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+    "migrations_dir": "migrations"
+  }],
+  "r2_buckets": [{
+    "binding": "MODELS",
+    "bucket_name": "sprea-models",
+    "preview_bucket_name": "sprea-models-preview"
+  }],
+  "vars": { "COLLECTOR_MODE": "mock" }
+}

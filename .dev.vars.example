@@ -1,0 +1,2 @@
+# Copy to .dev.vars. Never commit the real file.
+ADMIN_TOKEN=replace-with-a-long-random-value
