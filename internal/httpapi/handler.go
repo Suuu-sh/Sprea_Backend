@@ -1,0 +1,526 @@
+package httpapi
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"github.com/yota/sprea/backend/internal/collector"
+	buybackcsv "github.com/yota/sprea/backend/internal/collector/csv"
+	"github.com/yota/sprea/backend/internal/domain"
+	"github.com/yota/sprea/backend/internal/port"
+	"github.com/yota/sprea/backend/internal/research"
+	"github.com/yota/sprea/backend/internal/service"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type Handler struct {
+	service   *service.Opportunities
+	market    port.MarketRepository
+	repo      port.OpportunityRepository
+	ingestKey string
+	research  *research.Store
+}
+
+func New(s *service.Opportunities, repo port.OpportunityRepository, market port.MarketRepository, ingestKey string, researchStore ...*research.Store) http.Handler {
+	var rs *research.Store
+	if len(researchStore) > 0 {
+		rs = researchStore[0]
+	}
+	h := &Handler{service: s, repo: repo, market: market, ingestKey: ingestKey, research: rs}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /api/opportunities", h.list)
+	mux.HandleFunc("GET /api/opportunities/{id}", h.find)
+	mux.HandleFunc("GET /api/history/{id}", h.history)
+	mux.HandleFunc("GET /api/settings", h.getSettings)
+	mux.HandleFunc("PUT /api/settings", h.saveSettings)
+	mux.HandleFunc("GET /api/alerts", h.listAlerts)
+	mux.HandleFunc("POST /api/alerts", h.createAlert)
+	mux.HandleFunc("GET /api/notifications", h.notifications)
+	mux.HandleFunc("GET /api/collector/status", h.collectorStatus)
+	mux.HandleFunc("POST /api/collector/runs", h.recordCollectorRun)
+	mux.HandleFunc("POST /api/ingest", h.ingest)
+	mux.HandleFunc("POST /api/import/buybacks.csv", h.importBuybacksCSV)
+	mux.HandleFunc("GET /api/research/portfolio", h.researchPortfolio)
+	mux.HandleFunc("GET /api/research/metrics", h.researchMetrics)
+	mux.HandleFunc("GET /api/research/dashboard", h.researchDashboard)
+	mux.HandleFunc("POST /api/research/reality", h.recordReality)
+	mux.HandleFunc("GET /api/research/mock-market", h.mockMarketStatus)
+	mux.HandleFunc("POST /api/research/mock-market/advance", h.advanceMockMarket)
+	mux.HandleFunc("PUT /api/research/mock-market", h.configureMockMarket)
+	mux.HandleFunc("POST /api/research/mock-market/reset", h.resetMockMarket)
+	mux.HandleFunc("GET /api/research/products/{key}", h.researchProduct)
+	mux.HandleFunc("GET /api/research/paper-trades", h.paperTrades)
+	mux.HandleFunc("POST /api/research/paper-trades/{id}/close", h.closePaperTrade)
+	mux.HandleFunc("GET /api/research/settings", h.researchSettings)
+	mux.HandleFunc("PUT /api/research/settings", h.saveResearchSettings)
+	mux.HandleFunc("GET /api/research/evaluator", h.evaluatorStatus)
+	mux.HandleFunc("POST /api/research/evaluator/run", h.runEvaluator)
+	return cors(mux)
+}
+
+func (h *Handler) mockMarketStatus(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(os.Getenv("SPREA_ENV"), "production") {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	x, err := h.research.MockMarketStatus(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) advanceMockMarket(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(os.Getenv("SPREA_ENV"), "production") {
+		writeJSON(w, 403, map[string]string{"error": "mock market is disabled in production"})
+		return
+	}
+	var body struct {
+		Hours int `json:"hours"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x, err := h.research.AdvanceMockMarket(r.Context(), body.Hours)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+
+func (h *Handler) researchProduct(w http.ResponseWriter, r *http.Request) {
+	x, err := h.research.GetProductDetail(r.Context(), r.PathValue("key"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) paperTrades(w http.ResponseWriter, r *http.Request) {
+	x, err := h.research.ListPaperTrades(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) closePaperTrade(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	now := time.Now().UTC()
+	if os.Getenv("SPREA_ENV") != "production" {
+		now, _, _ = h.research.MockClock(r.Context())
+	}
+	x, err := h.research.ClosePaperTrade(r.Context(), id, now)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) researchSettings(w http.ResponseWriter, r *http.Request) {
+	x, err := h.research.GetResearchSettings(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) saveResearchSettings(w http.ResponseWriter, r *http.Request) {
+	var x research.ResearchSettings
+	if err := json.NewDecoder(r.Body).Decode(&x); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x, err := h.research.SaveResearchSettings(r.Context(), x)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) evaluatorStatus(w http.ResponseWriter, r *http.Request) {
+	schedules, err := h.research.EvaluationSchedules(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	runs, err := h.research.ListEvaluatorRuns(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"schedules": schedules, "runs": runs})
+}
+func (h *Handler) runEvaluator(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().UTC()
+	if os.Getenv("SPREA_ENV") != "production" {
+		now, _, _ = h.research.MockClock(r.Context())
+	}
+	x, err := h.research.RunEvaluator(r.Context(), "manual", now)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) configureMockMarket(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(os.Getenv("SPREA_ENV"), "production") {
+		writeJSON(w, 403, map[string]string{"error": "mock market is disabled in production"})
+		return
+	}
+	var body struct {
+		Scenario    string `json:"scenario"`
+		AutoAdvance bool   `json:"autoAdvance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x, err := h.research.ConfigureMockMarket(r.Context(), body.Scenario, body.AutoAdvance)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) resetMockMarket(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(os.Getenv("SPREA_ENV"), "production") {
+		writeJSON(w, 403, map[string]string{"error": "mock market is disabled in production"})
+		return
+	}
+	x, err := h.research.ResetMockMarket(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+
+func (h *Handler) researchDashboard(w http.ResponseWriter, r *http.Request) {
+	if h.research == nil {
+		writeJSON(w, 503, map[string]string{"error": "research store unavailable"})
+		return
+	}
+	x, err := h.research.Dashboard(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+
+func (h *Handler) researchPortfolio(w http.ResponseWriter, r *http.Request) {
+	if h.research == nil {
+		writeJSON(w, 503, map[string]string{"error": "research store unavailable"})
+		return
+	}
+	x, err := h.research.Portfolio(r.Context(), 300000)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) researchMetrics(w http.ResponseWriter, r *http.Request) {
+	if h.research == nil {
+		writeJSON(w, 503, map[string]string{"error": "research store unavailable"})
+		return
+	}
+	horizon, _ := strconv.Atoi(r.URL.Query().Get("horizon"))
+	if horizon == 0 {
+		horizon = 48
+	}
+	if horizon != 24 && horizon != 48 && horizon != 72 && horizon != 168 {
+		writeJSON(w, 400, map[string]string{"error": "horizon must be 24, 48, 72, or 168"})
+		return
+	}
+	x, err := h.research.StrategyMetrics(r.Context(), "rule-v1", horizon)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) recordReality(w http.ResponseWriter, r *http.Request) {
+	if h.research == nil {
+		writeJSON(w, 503, map[string]string{"error": "research store unavailable"})
+		return
+	}
+	var x research.RealityCalibration
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&x); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	if strings.TrimSpace(x.CanonicalKey) == "" || x.ActualPurchasePrice < 0 || x.ActualPayout < 0 || x.ActualCosts < 0 {
+		writeJSON(w, 400, map[string]string{"error": "invalid reality calibration"})
+		return
+	}
+	saved, err := h.research.RecordRealityCalibration(r.Context(), x)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 201, saved)
+}
+func (h *Handler) notifications(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.market.ListNotifications(r.Context(), userID(r), limit)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (h *Handler) collectorStatus(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.market.ListCollectorRuns(r.Context(), limit)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"lastRun": func() any {
+		if len(items) > 0 {
+			return items[0]
+		}
+		return nil
+	}(), "runs": items})
+}
+func (h *Handler) recordCollectorRun(w http.ResponseWriter, r *http.Request) {
+	if h.ingestKey == "" || r.Header.Get("Authorization") != "Bearer "+h.ingestKey {
+		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var x domain.CollectorRun
+	if err := json.NewDecoder(r.Body).Decode(&x); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	if strings.TrimSpace(x.RunID) == "" || strings.TrimSpace(x.Source) == "" || (x.Status != "running" && x.Status != "succeeded" && x.Status != "failed") || x.ItemCount < 0 || len(x.Message) > 1000 {
+		writeJSON(w, 400, map[string]string{"error": "invalid collector run"})
+		return
+	}
+	if err := h.market.RecordCollectorRun(r.Context(), x); err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 202, x)
+}
+func userID(r *http.Request) string {
+	if v := r.Header.Get("X-User-ID"); v != "" {
+		return v
+	}
+	return "local-user"
+}
+func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x, err := h.market.History(r.Context(), id, 30)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
+	x, err := h.market.GetSettings(r.Context(), userID(r))
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) saveSettings(w http.ResponseWriter, r *http.Request) {
+	var x domain.UserSettings
+	if err := json.NewDecoder(r.Body).Decode(&x); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x.UserID = userID(r)
+	if x.PointAdjustment < -5 || x.PointAdjustment > 20 || x.MinimumProfit < 0 || x.MinimumProfitRate < 0 {
+		writeJSON(w, 400, map[string]string{"error": "invalid settings"})
+		return
+	}
+	if err := h.market.SaveSettings(r.Context(), x); err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) listAlerts(w http.ResponseWriter, r *http.Request) {
+	x, err := h.market.ListAlerts(r.Context(), userID(r))
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) createAlert(w http.ResponseWriter, r *http.Request) {
+	var x domain.AlertRule
+	if err := json.NewDecoder(r.Body).Decode(&x); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x.UserID = userID(r)
+	x.Enabled = true
+	if strings.TrimSpace(x.Name) == "" {
+		writeJSON(w, 400, map[string]string{"error": "name is required"})
+		return
+	}
+	saved, err := h.market.CreateAlert(r.Context(), x)
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 201, saved)
+}
+
+func (h *Handler) importBuybacksCSV(w http.ResponseWriter, r *http.Request) {
+	if h.ingestKey != "" && r.Header.Get("Authorization") != "Bearer "+h.ingestKey {
+		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	offers, err := buybackcsv.Read(http.MaxBytesReader(w, r.Body, 2<<20))
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	items, err := h.repo.List(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	updated := collector.MatchOpportunities(items, offers, .8)
+	matched := 0
+	for i := range updated {
+		if updated[i].BuybackPrice != items[i].BuybackPrice || updated[i].Buyer != items[i].Buyer {
+			matched++
+		}
+	}
+	if err = h.repo.ReplaceAll(r.Context(), updated); err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	saved, err := h.repo.List(r.Context())
+	if err == nil {
+		err = h.market.RecordSnapshots(r.Context(), saved)
+	}
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]int{"offers": len(offers), "matched": matched})
+}
+func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
+	if h.ingestKey != "" && r.Header.Get("Authorization") != "Bearer "+h.ingestKey {
+		writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var items []domain.Opportunity
+	if err := json.NewDecoder(r.Body).Decode(&items); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	if len(items) > 1000 {
+		writeJSON(w, 400, map[string]string{"error": "too many items"})
+		return
+	}
+	if err := h.repo.ReplaceAll(r.Context(), items); err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	saved, err := h.repo.List(r.Context())
+	if err == nil {
+		err = h.market.RecordSnapshots(r.Context(), saved)
+	}
+	created := 0
+	if err == nil {
+		created, err = h.market.EvaluateNotifications(r.Context(), saved)
+	}
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 202, map[string]int{"accepted": len(items), "notificationsCreated": created})
+}
+func adjustment(r *http.Request) int {
+	v, _ := strconv.Atoi(r.URL.Query().Get("pointAdjustment"))
+	if v < -20 {
+		return -20
+	}
+	if v > 50 {
+		return 50
+	}
+	return v
+}
+func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	items, err := h.service.List(r.Context(), adjustment(r))
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (h *Handler) find(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	o, err := h.service.Find(r.Context(), id, adjustment(r))
+	if err == sql.ErrNoRows {
+		writeError(w, 404, err)
+		return
+	}
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, o)
+}
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if strings.HasPrefix(origin, "http://localhost:") {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,X-User-ID,Authorization")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

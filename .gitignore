@@ -1,0 +1,14 @@
+data/
+*.db
+.env*
+!.env.example
+!.dev.vars.example
+node_modules/
+.wrangler/
+.DS_Store
+dist/
+coverage/
+__pycache__/
+.pytest_cache/
+.venv/
+artifacts/
