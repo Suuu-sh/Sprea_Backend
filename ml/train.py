@@ -36,9 +36,9 @@ def choose_threshold(y, profit, probability, min_selected=3):
     return max(candidates)[3]
 
 def train(db_path: str, out: Path):
-    import lightgbm as lgb
     df=load_rows(db_path)
     if len(df)<20 or df.label.nunique()<2: raise ValueError("at least 20 completed 48h rows with both labels are required")
+    import lightgbm as lgb
     train_df,val_df,test_df=chronological_split(df)
     if min(len(val_df),len(test_df))<2 or train_df.label.nunique()<2: raise ValueError("insufficient chronological split")
     model=lgb.LGBMClassifier(n_estimators=100,num_leaves=15,learning_rate=.05,random_state=42,verbosity=-1)
@@ -53,4 +53,14 @@ def train(db_path: str, out: Path):
 
 if __name__=="__main__":
     p=argparse.ArgumentParser();p.add_argument("--db",required=True);p.add_argument("--out",default="artifacts/candidate")
-    a=p.parse_args();print(json.dumps(train(a.db,Path(a.out))))
+    a=p.parse_args(); out=Path(a.out)
+    try:
+        print(json.dumps(train(a.db,out)))
+    except ValueError as error:
+        # A fresh production database has no mature 48h labels yet. This is an
+        # expected no-op, not an infrastructure failure; promotion still fails
+        # closed because the report does not contain qualifying metrics.
+        out.mkdir(parents=True,exist_ok=True)
+        report={"status":"insufficient_data","reason":str(error),"promotable":False}
+        (out/"metrics.json").write_text(json.dumps(report,indent=2,sort_keys=True)+"\n")
+        print(json.dumps(report))
