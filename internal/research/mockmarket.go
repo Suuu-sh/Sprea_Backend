@@ -98,7 +98,11 @@ func (s *Store) AdvanceMockMarket(ctx context.Context, hours int) (MockMarketSta
 	if err != nil {
 		return MockMarketStatus{}, err
 	}
-	p := Pipeline{Store: s, InitialCapital: 300000, MinimumProfit: 5000, MinimumConfidence: .95, SaleShipping: 1000}
+	settings, err := s.GetResearchSettings(ctx)
+	if err != nil {
+		return MockMarketStatus{}, err
+	}
+	p := Pipeline{Store: s, InitialCapital: settings.InitialCapital, MinimumProfit: settings.MinimumProfit, MinimumConfidence: settings.MinimumConfidence, SaleShipping: settings.SaleShipping, Fees: settings.Fees}
 	if _, err = p.Run(ctx, mockObservationsForScenario(now, elapsed, scenario), now); err != nil {
 		return MockMarketStatus{}, err
 	}

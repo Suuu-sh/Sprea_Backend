@@ -35,6 +35,11 @@ jobs:
       RAKUTEN_APPLICATION_ID: ${{ secrets.RAKUTEN_APPLICATION_ID }}
       RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
       RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
+      RAKUTEN_APPLE_ONLY: true
+      SPREA_COLLECTOR_SOURCE: ${{ vars.SPREA_COLLECTOR_SOURCE || 'rakuten' }}
+      YAHOO_CLIENT_ID: ${{ secrets.YAHOO_CLIENT_ID }}
+      SPREA_MIN_ITEMS: ${{ vars.SPREA_MIN_ITEMS || '1' }}
+      SPREA_ALERT_WEBHOOK_URL: ${{ secrets.SPREA_ALERT_WEBHOOK_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

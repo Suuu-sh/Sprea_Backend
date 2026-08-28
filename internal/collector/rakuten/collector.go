@@ -36,6 +36,7 @@ type Config struct {
 	Hits          int
 	Endpoint      string
 	HTTPClient    *http.Client
+	AppleOnly     bool
 }
 
 // NewFromEnv creates a collector from runtime configuration. Only the
@@ -50,6 +51,7 @@ func NewFromEnv() (*Collector, error) {
 		Keyword:       os.Getenv("RAKUTEN_KEYWORD"),
 		GenreID:       os.Getenv("RAKUTEN_GENRE_ID"),
 		Hits:          hits,
+		AppleOnly:     !strings.EqualFold(os.Getenv("RAKUTEN_APPLE_ONLY"), "false"),
 	})
 }
 
@@ -62,6 +64,7 @@ type Collector struct {
 	hits          int
 	endpoint      string
 	client        *http.Client
+	appleOnly     bool
 }
 
 var _ port.Collector = (*Collector)(nil)
@@ -88,7 +91,7 @@ func New(cfg Config) (*Collector, error) {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 15 * time.Second}
 	}
-	return &Collector{cfg.ApplicationID, cfg.AccessKey, cfg.AffiliateID, cfg.Keyword, cfg.GenreID, cfg.Hits, cfg.Endpoint, cfg.HTTPClient}, nil
+	return &Collector{cfg.ApplicationID, cfg.AccessKey, cfg.AffiliateID, cfg.Keyword, cfg.GenreID, cfg.Hits, cfg.Endpoint, cfg.HTTPClient, cfg.AppleOnly}, nil
 }
 
 func (c *Collector) Collect(ctx context.Context) ([]domain.Opportunity, error) {
@@ -166,6 +169,10 @@ func (c *Collector) CollectProducts(ctx context.Context) ([]Product, error) {
 	}
 	items := make([]Product, 0, len(payload.Items))
 	for _, item := range payload.Items {
+		lower := strings.ToLower(item.ItemName)
+		if c.appleOnly && (!isAppleProduct(lower) || strings.Contains(lower, "中古") || strings.Contains(lower, "整備済") || strings.Contains(lower, "訳あり")) {
+			continue
+		}
 		imageURL := ""
 		if len(item.MediumImageURLs) > 0 {
 			imageURL = item.MediumImageURLs[0]
@@ -177,6 +184,15 @@ func (c *Collector) CollectProducts(ctx context.Context) ([]Product, error) {
 		})
 	}
 	return items, nil
+}
+
+func isAppleProduct(s string) bool {
+	for _, x := range []string{"iphone", "ipad", "airpods", "apple watch", "macbook", "mac mini", "imac"} {
+		if strings.Contains(s, x) {
+			return true
+		}
+	}
+	return false
 }
 
 type searchResponse struct {

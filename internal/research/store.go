@@ -82,6 +82,8 @@ func (s *Store) migrate() error {
 	 status TEXT NOT NULL, reviewed_at TEXT NOT NULL, notes TEXT NOT NULL);
 	CREATE TABLE IF NOT EXISTS mock_market_clock (id INTEGER PRIMARY KEY CHECK(id=1), current_at TEXT NOT NULL, elapsed_hours INTEGER NOT NULL);
 	CREATE TABLE IF NOT EXISTS mock_market_control (id INTEGER PRIMARY KEY CHECK(id=1), scenario TEXT NOT NULL DEFAULT 'stable', auto_advance INTEGER NOT NULL DEFAULT 0);
+	CREATE TABLE IF NOT EXISTS research_settings (id INTEGER PRIMARY KEY CHECK(id=1), initial_capital INTEGER NOT NULL, minimum_profit INTEGER NOT NULL, minimum_confidence REAL NOT NULL, sale_shipping INTEGER NOT NULL, fees INTEGER NOT NULL, evaluation_hours TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS evaluator_runs (id INTEGER PRIMARY KEY, trigger TEXT NOT NULL, status TEXT NOT NULL, evaluated_count INTEGER NOT NULL, message TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT NOT NULL);
 	INSERT OR IGNORE INTO mock_market_control(id,scenario,auto_advance) VALUES(1,'stable',0);`)
 	return err
 }

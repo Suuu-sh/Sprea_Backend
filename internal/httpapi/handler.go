@@ -3,6 +3,7 @@ package httpapi
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"github.com/yota/sprea/backend/internal/collector"
 	buybackcsv "github.com/yota/sprea/backend/internal/collector/csv"
 	"github.com/yota/sprea/backend/internal/domain"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Handler struct {
@@ -53,6 +55,13 @@ func New(s *service.Opportunities, repo port.OpportunityRepository, market port.
 	mux.HandleFunc("POST /api/research/mock-market/advance", h.advanceMockMarket)
 	mux.HandleFunc("PUT /api/research/mock-market", h.configureMockMarket)
 	mux.HandleFunc("POST /api/research/mock-market/reset", h.resetMockMarket)
+	mux.HandleFunc("GET /api/research/products/{key}", h.researchProduct)
+	mux.HandleFunc("GET /api/research/paper-trades", h.paperTrades)
+	mux.HandleFunc("POST /api/research/paper-trades/{id}/close", h.closePaperTrade)
+	mux.HandleFunc("GET /api/research/settings", h.researchSettings)
+	mux.HandleFunc("PUT /api/research/settings", h.saveResearchSettings)
+	mux.HandleFunc("GET /api/research/evaluator", h.evaluatorStatus)
+	mux.HandleFunc("POST /api/research/evaluator/run", h.runEvaluator)
 	return cors(mux)
 }
 
@@ -83,6 +92,94 @@ func (h *Handler) advanceMockMarket(w http.ResponseWriter, r *http.Request) {
 	x, err := h.research.AdvanceMockMarket(r.Context(), body.Hours)
 	if err != nil {
 		writeError(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+
+func (h *Handler) researchProduct(w http.ResponseWriter, r *http.Request) {
+	x, err := h.research.GetProductDetail(r.Context(), r.PathValue("key"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) paperTrades(w http.ResponseWriter, r *http.Request) {
+	x, err := h.research.ListPaperTrades(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) closePaperTrade(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	now := time.Now().UTC()
+	if os.Getenv("SPREA_ENV") != "production" {
+		now, _, _ = h.research.MockClock(r.Context())
+	}
+	x, err := h.research.ClosePaperTrade(r.Context(), id, now)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) researchSettings(w http.ResponseWriter, r *http.Request) {
+	x, err := h.research.GetResearchSettings(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) saveResearchSettings(w http.ResponseWriter, r *http.Request) {
+	var x research.ResearchSettings
+	if err := json.NewDecoder(r.Body).Decode(&x); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	x, err := h.research.SaveResearchSettings(r.Context(), x)
+	if err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, x)
+}
+func (h *Handler) evaluatorStatus(w http.ResponseWriter, r *http.Request) {
+	schedules, err := h.research.EvaluationSchedules(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	runs, err := h.research.ListEvaluatorRuns(r.Context())
+	if err != nil {
+		writeError(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"schedules": schedules, "runs": runs})
+}
+func (h *Handler) runEvaluator(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().UTC()
+	if os.Getenv("SPREA_ENV") != "production" {
+		now, _, _ = h.research.MockClock(r.Context())
+	}
+	x, err := h.research.RunEvaluator(r.Context(), "manual", now)
+	if err != nil {
+		writeError(w, 500, err)
 		return
 	}
 	writeJSON(w, 200, x)
