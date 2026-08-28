@@ -88,3 +88,15 @@ func TestCollectProductsPreservesAffiliateURL(t *testing.T) {
 		t.Fatalf("affiliate fields lost: %+v", products[0])
 	}
 }
+
+func TestAppleOnlyRejectsUsedAndNonApple(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"Items":[{"itemName":"Apple iPhone 17 新品","itemPrice":1},{"itemName":"iPhone 中古","itemPrice":2},{"itemName":"テレビ 新品","itemPrice":3}]}`))
+	}))
+	defer server.Close()
+	c, _ := New(Config{ApplicationID: "app", AccessKey: "key", AppleOnly: true, Endpoint: server.URL, HTTPClient: server.Client()})
+	x, err := c.CollectProducts(context.Background())
+	if err != nil || len(x) != 1 || x[0].Price != 1 {
+		t.Fatalf("%+v %v", x, err)
+	}
+}

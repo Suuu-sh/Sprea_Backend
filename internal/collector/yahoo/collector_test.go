@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestNormalizesAppleNewOnly(t *testing.T) {
@@ -19,5 +20,17 @@ func TestNormalizesAppleNewOnly(t *testing.T) {
 	x, err := c.CollectProducts(context.Background())
 	if err != nil || len(x) != 1 || x[0].JAN != "4900000000001" || x[0].Model != "MG854J/A" || !x[0].ShippingKnown {
 		t.Fatalf("%+v %v", x, err)
+	}
+}
+
+func TestRateLimitsToOneRequestPerSecond(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"hits":[]}`)) }))
+	defer s.Close()
+	c, _ := New(Config{ClientID: "id", Endpoint: s.URL, HTTPClient: s.Client()})
+	start := time.Now()
+	_, _ = c.CollectProducts(context.Background())
+	_, _ = c.CollectProducts(context.Background())
+	if time.Since(start) < 900*time.Millisecond {
+		t.Fatal("requests were not rate limited")
 	}
 }
