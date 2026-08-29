@@ -11,9 +11,10 @@ import buybackOpportunity from "../migrations/0005_buyback_opportunities.sql?raw
 import liveOpportunities from "../migrations/0006_live_opportunities.sql?raw";
 import evaluationScores from "../migrations/0007_evaluation_scores.sql?raw";
 import decisionObservability from "../migrations/0008_decision_observability.sql?raw";
+import productDiscovery from "../migrations/0009_product_discovery.sql?raw";
 
 function statements(migration:string){const out:string[]=[],lines=migration.split("\n");let buffer="",trigger=false;for(const line of lines){if(!trigger&&/^CREATE TRIGGER/i.test(line.trim()))trigger=true;buffer+=line+"\n";if(trigger){if(/^END;\s*$/i.test(line.trim())){out.push(buffer.trim().replace(/;$/,""));buffer="";trigger=false;}}else if(line.includes(";")){const parts=buffer.split(";");for(const part of parts.slice(0,-1))if(part.trim())out.push(part.trim());buffer=parts.at(-1)??"";}}if(buffer.trim())out.push(buffer.trim());return out;}
-beforeAll(async()=>{for(const migration of [initial,research,safety,buyback,buybackOpportunity,liveOpportunities,evaluationScores,decisionObservability])for(const sql of statements(migration))await env.DB.prepare(sql).run();});
+beforeAll(async()=>{for(const migration of [initial,research,safety,buyback,buybackOpportunity,liveOpportunities,evaluationScores,decisionObservability,productDiscovery])for(const sql of statements(migration))await env.DB.prepare(sql).run();});
 
 describe("Research Worker",()=>{
  it("classifies paper-trading constraints as structured SKIP reasons",()=>{expect(paperTradeSkipReason("open position already exists")).toBe("duplicate_holding");expect(paperTradeSkipReason("insufficient paper cash")).toBe("insufficient_funds");expect(paperTradeSkipReason("other database error")).toBeNull();});
