@@ -5,6 +5,8 @@ ALTER TABLE research_opportunities ADD COLUMN profit_gap_yen INTEGER NOT NULL DE
 ALTER TABLE research_opportunities ADD COLUMN required_confidence REAL NOT NULL DEFAULT 0.95 CHECK(required_confidence >= 0 AND required_confidence <= 1);
 ALTER TABLE research_opportunities ADD COLUMN confidence_gap REAL NOT NULL DEFAULT 0 CHECK(confidence_gap >= 0 AND confidence_gap <= 1);
 
+-- Historical thresholds are not available, so existing rows use the settings at
+-- migration time. Newly created rows always capture their actual decision settings.
 UPDATE research_opportunities
 SET decision_reasons_json = CASE
   WHEN decision = 'BUY' THEN '[]'
