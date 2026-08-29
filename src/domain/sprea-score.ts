@@ -1,0 +1,12 @@
+export const SPREA_SCORE_VERSION="rule-v1";
+export type ScoreReason={profit:number;profitRate:number;buybackSources:number;buybackSpread:number;priceStability:number;dataConfidence:number;stabilityStatus:"measured"|"insufficient_history"};
+export type SpreaScoreInput={marketProfit:number;profitRate:number;buybackSourceCount:number;bestSecondSpreadRate:number|null;priceVariationRate:number|null;stockStatus:"in_stock"|"low_stock";retailAgeMinutes:number;buybackAgeMinutes:number;matchConfidence:number};
+export type PriceStatistics={minimum:number;maximum:number;average:number;current:number;variationRate:number};
+const profitPoints=(v:number)=>v<5000?0:v<7500?10:v<10000?20:v<15000?25:30;
+const ratePoints=(v:number)=>v<3?0:v<5?5:v<8?10:15;
+const sourcePoints=(v:number)=>v<2?3:v===2?8:v===3?12:15;
+const stabilityPoints=(v:number|null)=>v===null?8:v<=1?15:v<=3?12:v<=5?8:v<=10?3:0;
+const spreadPoints=(v:number|null)=>v===null?3:v<=1?15:v<=3?12:v<=5?8:v<=10?3:0;
+export function calculatePriceStatistics(prices:number[]):PriceStatistics|null{const valid=prices.filter(value=>Number.isFinite(value)&&value>0);if(valid.length<2)return null;const minimum=Math.min(...valid),maximum=Math.max(...valid),average=valid.reduce((sum,value)=>sum+value,0)/valid.length,current=valid.at(-1)!;return{minimum,maximum,average,current,variationRate:average?((maximum-minimum)/average)*100:0};}
+export function calculatePriceVariation(prices:number[]):number|null{return calculatePriceStatistics(prices)?.variationRate??null;}
+export function calculateSpreaScore(input:SpreaScoreInput):{score:number;version:string;reason:ScoreReason}{const fresh=Math.max(0,Math.min(6,6-Math.floor(input.retailAgeMinutes/30)-Math.floor(input.buybackAgeMinutes/45))),stock=input.stockStatus==="in_stock"?2:1,identity=input.matchConfidence>=.99?2:input.matchConfidence>=.95?1:0;const reason:ScoreReason={profit:profitPoints(input.marketProfit),profitRate:ratePoints(input.profitRate),buybackSources:sourcePoints(input.buybackSourceCount),buybackSpread:spreadPoints(input.bestSecondSpreadRate),priceStability:stabilityPoints(input.priceVariationRate),dataConfidence:Math.min(10,fresh+stock+identity),stabilityStatus:input.priceVariationRate===null?"insufficient_history":"measured"};return{score:Math.max(0,Math.min(100,Object.entries(reason).filter(([,value])=>typeof value==="number").reduce((sum,[,value])=>sum+(value as number),0))),version:SPREA_SCORE_VERSION,reason};}
