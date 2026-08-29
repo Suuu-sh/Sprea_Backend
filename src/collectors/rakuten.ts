@@ -32,7 +32,7 @@ export class RakutenCollector implements Collector {
     url.searchParams.set("availability", "1");
     url.searchParams.set("postageFlag", "1");
     const response = await (this.options.fetch ?? globalThis.fetch)(url, {
-      headers: { accessKey: this.options.accessKey, accept: "application/json" },
+      headers: { accessKey: this.options.accessKey, accept: "application/json", origin: "https://sprea-frontend.pages.dev", referer: "https://sprea-frontend.pages.dev/" },
     });
     if (!response.ok) throw new Error(`Rakuten API failed (${response.status})`);
     const payload = await response.json() as { items?: Array<RakutenItem | { item?: RakutenItem }> };
