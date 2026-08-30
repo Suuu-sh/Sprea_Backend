@@ -9,6 +9,7 @@ describe("buyback-driven product discovery",()=>{
  it("matches Rakuten caption JAN even when the title omits it",()=>expect(rakutenIdentityMatches({...quote,model_number:null},{itemName:"Device 256GB Black",itemCaption:"JAN 4549995000000",catchcopy:"新品"})).toBe(true));
  it("uses a product name or embedded Japanese model instead of a JAN-only Rakuten keyword",()=>{expect(rakutenDiscoveryQuery({...quote,model_number:null,product_name:"Apple iPhone16 Pro Max 1TB 送料無料"})).toBe("Apple iPhone16 Pro Max 1TB");expect(rakutenDiscoveryQuery({...quote,model_number:null,product_name:"iPad Air MH5T4J/A 128GB"})).toBe("MH5T4J/A");});
  it("rejects used or refurbished Rakuten listings",()=>expect(rakutenIdentityMatches({...quote,jan:null},{itemName:"Device ABC-123 整備済品",itemCaption:"",catchcopy:""})).toBe(false));
+ it("matches reordered Rakuten titles without weakening capacity checks",()=>{const candidate={jan:"4549995649321",model_number:null,product_name:"iPhone 17 Pro Max 512GB",attributes_json:"{}"};expect(rakutenIdentityMatches(candidate,{itemName:"Apple iPhone 17 Pro Max SIMフリー 国内版 512GB 新品",itemCaption:"",catchcopy:"送料無料"})).toBe(true);expect(rakutenIdentityMatches(candidate,{itemName:"Apple iPhone 17 Pro Max SIMフリー 256GB 新品",itemCaption:"",catchcopy:""})).toBe(false);});
  it("searches Rakuten below the inverse-price ceiling and keeps exact model matches",async()=>{
   let requested:URL|undefined;
   const fetcher=async(input:RequestInfo|URL)=>{requested=new URL(String(input));return new Response(JSON.stringify({items:[
