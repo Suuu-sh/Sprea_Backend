@@ -2,6 +2,16 @@
 
 Spreaの現行実装は、個人利用専用の **Cloudflare Workers + D1 + R2** 価格差研究基盤です。バックエンドはTypeScriptのResearch Workerへ統一しています。
 
+## Amazon Creators API
+
+Amazon.co.jpの商品探索は公式Creators APIのみを利用し、Webページのスクレイピングは行いません。次のWorker Secretを設定すると、既存のCandidate探索キューへ`amazon` Providerが自動登録されます。
+
+- `AMAZON_CREATORS_CLIENT_ID`
+- `AMAZON_CREATORS_CLIENT_SECRET`
+- `AMAZON_PARTNER_TAG`
+
+日本向けOAuth endpointと`www.amazon.co.jp` marketplaceを使用します。新品・在庫あり・Buy Box・Amazon販売・JPY価格・商品同定一致・探索上限以内のOfferだけを保存します。
+
 ## Cloudflare Research v1
 
 個人利用専用の価格差研究基盤です。本番環境ではMock Collectorを無効化し、承認済みの実データだけを扱います。ローカルテストではMock Collectorから一周を実行できます。D1 に商品、価格履歴、Opportunity、30万円の Paper Trading、24h/48h/72h/7d 評価を保存します。Python/LightGBM は毎日 GitHub Actions で学習・バックテストし、厳しい昇格条件を通ったモデルだけを R2 に保存します。

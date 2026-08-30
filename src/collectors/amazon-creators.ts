@@ -1,0 +1,23 @@
+import {normalizeModelNumber} from "../domain";
+import type {ListingObservation} from "../types";
+
+export type AmazonCandidate={jan:string|null;model_number:string|null;product_name:string;brand:string|null;category:string|null;search_query:string;discovery_ceiling_yen:number};
+export type AmazonCreatorsOptions={clientId:string;clientSecret:string;partnerTag:string;marketplace?:string};
+type AmazonListing={availability?:{type?:unknown};condition?:{value?:unknown};isBuyBoxWinner?:unknown;merchantInfo?:{name?:unknown};price?:{money?:{amount?:unknown;currency?:unknown}}};
+type AmazonItem={asin?:unknown;detailPageURL?:unknown;itemInfo?:{title?:{displayValue?:unknown};externalIds?:{eans?:{displayValues?:unknown[]};upcs?:{displayValues?:unknown[]}}};offersV2?:{listings?:AmazonListing[]}};
+let cachedToken:{key:string;value:string;expiresAt:number}|null=null;
+
+const exactIdentity=(candidate:AmazonCandidate,item:AmazonItem,title:string)=>{const model=normalizeModelNumber(candidate.model_number);if(model)return normalizeModelNumber(title).includes(model);if(!candidate.jan)return false;const ids=[...(item.itemInfo?.externalIds?.eans?.displayValues??[]),...(item.itemInfo?.externalIds?.upcs?.displayValues??[])].map(String);return ids.includes(candidate.jan)||title.replace(/\D/g,"").includes(candidate.jan);};
+
+export async function amazonAccessToken(options:AmazonCreatorsOptions,fetcher:typeof fetch=fetch,now=Date.now()):Promise<string>{
+ const key=`${options.clientId}:${options.clientSecret}`;if(cachedToken?.key===key&&cachedToken.expiresAt>now+60_000)return cachedToken.value;
+ const response=await fetcher("https://api.amazon.co.jp/auth/o2/token",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({grant_type:"client_credentials",client_id:options.clientId,client_secret:options.clientSecret,scope:"creatorsapi::default"})});
+ if(!response.ok)throw new Error(`Amazon Creators authentication failed (${response.status})`);const payload=await response.json() as{access_token?:unknown;expires_in?:unknown},token=typeof payload.access_token==="string"?payload.access_token:"",expires=Number(payload.expires_in);if(!token)throw new Error("Amazon Creators authentication returned no access token");cachedToken={key,value:token,expiresAt:now+(Number.isFinite(expires)?expires:3600)*1000};return token;
+}
+
+export async function searchAmazonCreators(candidate:AmazonCandidate,options:AmazonCreatorsOptions,at:Date,fetcher:typeof fetch=fetch):Promise<ListingObservation[]>{
+ const marketplace=options.marketplace??"www.amazon.co.jp",token=await amazonAccessToken(options,fetcher,at.getTime()),response=await fetcher("https://creatorsapi.amazon/catalog/v1/searchItems",{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json","x-marketplace":marketplace},body:JSON.stringify({partnerTag:options.partnerTag,marketplace,keywords:candidate.search_query,searchIndex:"All",condition:"New",availability:"Available",sortBy:"Price:LowToHigh",itemCount:10,resources:["itemInfo.title","itemInfo.externalIds","offersV2.listings.availability","offersV2.listings.condition","offersV2.listings.isBuyBoxWinner","offersV2.listings.merchantInfo","offersV2.listings.price"]})});
+ if(!response.ok)throw new Error(`Amazon Creators discovery failed (${response.status})`);const payload=await response.json() as{searchResult?:{items?:AmazonItem[]}},results:ListingObservation[]=[];
+ for(const item of payload.searchResult?.items??[]){const asin=typeof item.asin==="string"?item.asin:"",url=typeof item.detailPageURL==="string"?item.detailPageURL:"",title=typeof item.itemInfo?.title?.displayValue==="string"?item.itemInfo.title.displayValue:"";if(!asin||!url||!title||!exactIdentity(candidate,item,title)||/中古|整備済|再生品|renewed|used/i.test(title))continue;for(const offer of item.offersV2?.listings??[]){const amount=Number(offer.price?.money?.amount),currency=offer.price?.money?.currency,merchant=typeof offer.merchantInfo?.name==="string"?offer.merchantInfo.name:"";if(offer.condition?.value!=="New"||offer.availability?.type!=="IN_STOCK"||offer.isBuyBoxWinner!==true||currency!=="JPY"||!Number.isSafeInteger(amount)||amount<=0||amount>candidate.discovery_ceiling_yen||!/amazon/i.test(merchant))continue;results.push({source:"amazon-discovery",externalId:asin,side:"purchase",title,url,gtin:candidate.jan??undefined,manufacturerPartNumber:candidate.model_number??undefined,brand:candidate.brand??undefined,model:candidate.product_name,category:candidate.category??undefined,condition:"new",priceYen:amount,shippingYen:0,feeYen:0,rewardYen:0,stock:1,stockStatus:"in_stock",purchasable:true,capturedAt:at.toISOString(),raw:item});break;}}
+ return results.sort((a,b)=>a.priceYen-b.priceYen).slice(0,10);
+}
