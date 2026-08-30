@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {candidateIdentity,discoveryQuery,purchaseTargets,rakutenDiscoveryQueries,rakutenDiscoveryQuery,rakutenIdentityMatches,searchRakuten} from "../src/discovery";
+import {candidateIdentity,discoveryQuery,purchaseTargets,rakutenDiscoveryQueries,rakutenDiscoveryQuery,rakutenIdentityMatches,retailIdentityMatches,searchRakuten} from "../src/discovery";
 const quote={jan:"4549995000000",model_number:"ABC-123",product_name:"Device 256GB Black",condition:"new",attributes_json:'{"storage":"256GB","color":"black"}'};
 describe("buyback-driven product discovery",()=>{
  it("deduplicates primarily by JAN",()=>expect(candidateIdentity(quote)).toBe("jan:4549995000000:new"));
@@ -11,6 +11,8 @@ describe("buyback-driven product discovery",()=>{
  it("adds compact and broad Rakuten fallback queries for AND-search variations",()=>expect(rakutenDiscoveryQueries({...quote,model_number:null,product_name:"iPhone 17 Pro Max 512GB"})).toEqual(["iPhone 17 Pro Max 512GB","iPhone17ProMax 512GB","iPhone17ProMax"]));
  it("rejects used or refurbished Rakuten listings",()=>expect(rakutenIdentityMatches({...quote,jan:null},{itemName:"Device ABC-123 整備済品",itemCaption:"",catchcopy:""})).toBe(false));
  it("matches reordered Rakuten titles without weakening capacity checks",()=>{const candidate={jan:"4549995649321",model_number:null,product_name:"iPhone 17 Pro Max 512GB",attributes_json:"{}"};expect(rakutenIdentityMatches(candidate,{itemName:"Apple iPhone 17 Pro Max SIMフリー 国内版 512GB 新品",itemCaption:"",catchcopy:"送料無料"})).toBe(true);expect(rakutenIdentityMatches(candidate,{itemName:"Apple iPhone 17 Pro Max SIMフリー 256GB 新品",itemCaption:"",catchcopy:""})).toBe(false);});
+ it("rejects retail variants with a different capacity, color, or edition",()=>{const candidate={jan:null,model_number:"ABC-123",product_name:"Device Pro 256GB ブラック",attributes_json:'{"storage":"256 GB","color":"ブラック","edition":"digital edition"}'};expect(retailIdentityMatches(candidate,"Device Pro ABC-123 256GB Black Digital Edition 新品")).toBe(true);expect(retailIdentityMatches(candidate,"Device Pro ABC-123 128GB Black Digital Edition 新品")).toBe(false);expect(retailIdentityMatches(candidate,"Device Pro ABC-123 256GB White Digital Edition 新品")).toBe(false);expect(retailIdentityMatches(candidate,"Device Pro ABC-123 256GB Black Disc Edition 新品")).toBe(false);});
+ it("rejects used, refurbished, overseas, and incompatible SIM listings",()=>{const candidate={jan:null,model_number:"ABC-123",product_name:"Device Pro 256GB ブラック SIMフリー",attributes_json:'{"storage":"256GB","color":"black"}'};for(const title of ["Device ABC-123 256GB Black 中古","Device ABC-123 256GB Black 整備済品","Device ABC-123 256GB Black 海外版","Device ABC-123 256GB Black docomo版"])expect(retailIdentityMatches(candidate,title)).toBe(false);});
  it("searches Rakuten by lowest price without hiding above-target market data and keeps exact model matches",async()=>{
   let requested:URL|undefined;
   const fetcher=async(input:RequestInfo|URL)=>{requested=new URL(String(input));return new Response(JSON.stringify({Items:[
