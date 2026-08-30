@@ -6,6 +6,7 @@ import {ImportBuybackQuotes} from "./application/import-buyback-quotes";
 import {D1BuybackQuoteRepository} from "./infrastructure/d1-buyback-quote-repository";
 import {D1ProductResolver} from "./infrastructure/d1-product-resolver";
 import {discoveryFunnel,runProductDiscovery} from "./discovery";
+import {researchAnalytics} from "./analytics";
 
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8"}});
 const isAuthorized=(r:Request,token?:string)=>Boolean(token)&&r.headers.get("authorization")===`Bearer ${token}`;
@@ -55,6 +56,7 @@ async function route(request:Request,env:Env):Promise<Response>{const url=new UR
  if(request.method==="POST"&&path==="/admin/discover"){const body=await request.json<{limit?:number}>().catch(()=>({} as {limit?:number}));return json(await runProductDiscovery(env,"manual",body.limit??10),202);}
  if(request.method==="GET"&&path==="/api/research/dashboard")return json(await dashboard(env.DB));
  if(request.method==="GET"&&path==="/api/research/discovery-candidates")return json(await discoveryCandidates(env.DB,url,Boolean(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG)));
+ if(request.method==="GET"&&path==="/api/research/analytics")return json(await researchAnalytics(env.DB));
  if(request.method==="POST"&&path==="/api/research/discovery/run")return json(await runProductDiscovery(env,"manual",6),202);
  if(request.method==="GET"&&path==="/api/portfolio")return json(await env.DB.prepare("SELECT * FROM research_paper_accounts WHERE id=1").first());
  if(request.method==="GET"&&path==="/api/metrics"){const h=Number(url.searchParams.get("horizon")??48);if(![24,48,72,168].includes(h))return json({error:"invalid horizon"},400);const rows=(await env.DB.prepare("SELECT outcome,market_profit_yen FROM research_opportunity_evaluations WHERE horizon_hours=? AND evaluation_status='completed'").bind(h).all<any>()).results,tp=rows.filter(x=>x.outcome==="buy_correct").length,fp=rows.filter(x=>x.outcome==="buy_failed").length,fn=rows.filter(x=>x.outcome==="missed_opportunity").length,b=rows.filter(x=>String(x.outcome).startsWith("buy_"));return json({horizon_hours:h,precision:tp+fp?tp/(tp+fp):null,recall:tp+fn?tp/(tp+fn):null,average_profit_yen:b.length?b.reduce((s,x)=>s+x.market_profit_yen,0)/b.length:null,max_loss_yen:b.length?Math.min(...b.map(x=>x.market_profit_yen)):null,samples:rows.length});}
