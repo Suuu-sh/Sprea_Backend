@@ -1,11 +1,13 @@
 import {describe,expect,it} from "vitest";
-import {candidateIdentity,discoveryQuery,purchaseTargets,searchRakuten} from "../src/discovery";
+import {candidateIdentity,discoveryQuery,purchaseTargets,rakutenIdentityMatches,searchRakuten} from "../src/discovery";
 const quote={jan:"4549995000000",model_number:"ABC-123",product_name:"Device 256GB Black",condition:"new",attributes_json:'{"storage":"256GB","color":"black"}'};
 describe("buyback-driven product discovery",()=>{
  it("deduplicates primarily by JAN",()=>expect(candidateIdentity(quote)).toBe("jan:4549995000000:new"));
  it("falls back to normalized model number",()=>expect(candidateIdentity({...quote,jan:null})).toBe("model:ABC123:new"));
  it("builds queries in model, JAN, then name/attribute order",()=>{expect(discoveryQuery(quote)).toBe("ABC-123");expect(discoveryQuery({...quote,model_number:null})).toBe("4549995000000");expect(discoveryQuery({...quote,jan:null,model_number:null})).toContain("256GB black");});
  it("derives a strict target and a bounded discovery ceiling",()=>expect(purchaseTargets(105000,5000,1000)).toEqual({target:99000,ceiling:102000}));
+ it("matches Rakuten caption JAN even when the title omits it",()=>expect(rakutenIdentityMatches({...quote,model_number:null},{itemName:"Device 256GB Black",itemCaption:"JAN 4549995000000",catchcopy:"新品"})).toBe(true));
+ it("rejects used or refurbished Rakuten listings",()=>expect(rakutenIdentityMatches({...quote,jan:null},{itemName:"Device ABC-123 整備済品",itemCaption:"",catchcopy:""})).toBe(false));
  it("searches Rakuten below the inverse-price ceiling and keeps exact model matches",async()=>{
   let requested:URL|undefined;
   const fetcher=async(input:RequestInfo|URL)=>{requested=new URL(String(input));return new Response(JSON.stringify({items:[
