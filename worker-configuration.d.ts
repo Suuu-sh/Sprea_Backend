@@ -9,6 +9,9 @@ interface Env {
   RAKUTEN_APPLICATION_ID?: string;
   RAKUTEN_ACCESS_KEY?: string;
   RAKUTEN_KEYWORD?: string;
+  AMAZON_CREATORS_CLIENT_ID?: string;
+  AMAZON_CREATORS_CLIENT_SECRET?: string;
+  AMAZON_PARTNER_TAG?: string;
   ADMIN_TOKEN?: string;
   INGEST_API_KEY?: string;
   SPREA_INGEST_TOKEN?: string;
