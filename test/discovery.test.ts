@@ -13,11 +13,11 @@ describe("buyback-driven product discovery",()=>{
  it("matches reordered Rakuten titles without weakening capacity checks",()=>{const candidate={jan:"4549995649321",model_number:null,product_name:"iPhone 17 Pro Max 512GB",attributes_json:"{}"};expect(rakutenIdentityMatches(candidate,{itemName:"Apple iPhone 17 Pro Max SIMフリー 国内版 512GB 新品",itemCaption:"",catchcopy:"送料無料"})).toBe(true);expect(rakutenIdentityMatches(candidate,{itemName:"Apple iPhone 17 Pro Max SIMフリー 256GB 新品",itemCaption:"",catchcopy:""})).toBe(false);});
  it("searches Rakuten by lowest price without hiding above-target market data and keeps exact model matches",async()=>{
   let requested:URL|undefined;
-  const fetcher=async(input:RequestInfo|URL)=>{requested=new URL(String(input));return new Response(JSON.stringify({items:[
-   {itemCode:"shop:1",itemName:"PlayStation 5 CFI-2000A01 新品",itemPrice:97800,itemUrl:"https://example.com/1",availability:1,postageFlag:0},
-   {itemCode:"shop:2",itemName:"PlayStation 5 CFI-1000A01 新品",itemPrice:80000,itemUrl:"https://example.com/2",availability:1,postageFlag:0},
-   {itemCode:"shop:3",itemName:"PlayStation 5 CFI-2000A01 送料別",itemPrice:90000,itemUrl:"https://example.com/3",availability:1,postageFlag:1},
-   {itemCode:"shop:4",itemName:"PlayStation 5 CFI-2000A01 新品",itemPrice:110000,itemUrl:"https://example.com/4",availability:1,postageFlag:0},
+  const fetcher=async(input:RequestInfo|URL)=>{requested=new URL(String(input));return new Response(JSON.stringify({Items:[
+   {Item:{itemCode:"shop:1",itemName:"PlayStation 5 CFI-2000A01 新品",itemPrice:97800,itemUrl:"https://example.com/1",availability:1,postageFlag:0}},
+   {Item:{itemCode:"shop:2",itemName:"PlayStation 5 CFI-1000A01 新品",itemPrice:80000,itemUrl:"https://example.com/2",availability:1,postageFlag:0}},
+   {Item:{itemCode:"shop:3",itemName:"PlayStation 5 CFI-2000A01 送料別",itemPrice:90000,itemUrl:"https://example.com/3",availability:1,postageFlag:1}},
+   {Item:{itemCode:"shop:4",itemName:"PlayStation 5 CFI-2000A01 新品",itemPrice:110000,itemUrl:"https://example.com/4",availability:1,postageFlag:0}},
   ]}),{status:200});};
   const candidate={id:1,canonical_product_id:1,jan:null,model_number:"CFI-2000A01",product_name:"PlayStation 5",brand:"Sony",category:"game",condition:"new",attributes_json:"{}",best_buyback_price_yen:105000,search_query:"CFI-2000A01",discovery_ceiling_yen:100000};
   const result=await searchRakuten(candidate,"app","access",new Date("2026-08-30T00:00:00Z"),fetcher as typeof fetch);
