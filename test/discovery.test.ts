@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {candidateIdentity,discoveryQuery,purchaseTargets,rakutenDiscoveryQuery,rakutenIdentityMatches,searchRakuten} from "../src/discovery";
+import {candidateIdentity,discoveryQuery,purchaseTargets,rakutenDiscoveryQueries,rakutenDiscoveryQuery,rakutenIdentityMatches,searchRakuten} from "../src/discovery";
 const quote={jan:"4549995000000",model_number:"ABC-123",product_name:"Device 256GB Black",condition:"new",attributes_json:'{"storage":"256GB","color":"black"}'};
 describe("buyback-driven product discovery",()=>{
  it("deduplicates primarily by JAN",()=>expect(candidateIdentity(quote)).toBe("jan:4549995000000:new"));
@@ -8,6 +8,7 @@ describe("buyback-driven product discovery",()=>{
  it("derives a strict target and a bounded discovery ceiling",()=>expect(purchaseTargets(105000,5000,1000)).toEqual({target:99000,ceiling:102000}));
  it("matches Rakuten caption JAN even when the title omits it",()=>expect(rakutenIdentityMatches({...quote,model_number:null},{itemName:"Device 256GB Black",itemCaption:"JAN 4549995000000",catchcopy:"新品"})).toBe(true));
  it("uses a product name or embedded Japanese model instead of a JAN-only Rakuten keyword",()=>{expect(rakutenDiscoveryQuery({...quote,model_number:null,product_name:"Apple iPhone16 Pro Max 1TB 送料無料"})).toBe("Apple iPhone16 Pro Max 1TB");expect(rakutenDiscoveryQuery({...quote,model_number:null,product_name:"iPad Air MH5T4J/A 128GB"})).toBe("MH5T4J/A");});
+ it("adds a compact Rakuten fallback query for AND-search variations",()=>expect(rakutenDiscoveryQueries({...quote,model_number:null,product_name:"iPhone 17 Pro Max 512GB"})).toEqual(["iPhone 17 Pro Max 512GB","iPhone17ProMax 512GB"]));
  it("rejects used or refurbished Rakuten listings",()=>expect(rakutenIdentityMatches({...quote,jan:null},{itemName:"Device ABC-123 整備済品",itemCaption:"",catchcopy:""})).toBe(false));
  it("matches reordered Rakuten titles without weakening capacity checks",()=>{const candidate={jan:"4549995649321",model_number:null,product_name:"iPhone 17 Pro Max 512GB",attributes_json:"{}"};expect(rakutenIdentityMatches(candidate,{itemName:"Apple iPhone 17 Pro Max SIMフリー 国内版 512GB 新品",itemCaption:"",catchcopy:"送料無料"})).toBe(true);expect(rakutenIdentityMatches(candidate,{itemName:"Apple iPhone 17 Pro Max SIMフリー 256GB 新品",itemCaption:"",catchcopy:""})).toBe(false);});
  it("searches Rakuten by lowest price without hiding above-target market data and keeps exact model matches",async()=>{
