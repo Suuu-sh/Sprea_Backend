@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {candidateIdentity,discoveryQuery,purchaseTargets,rakutenIdentityMatches,searchRakuten} from "../src/discovery";
+import {candidateIdentity,discoveryQuery,purchaseTargets,rakutenDiscoveryQuery,rakutenIdentityMatches,searchRakuten} from "../src/discovery";
 const quote={jan:"4549995000000",model_number:"ABC-123",product_name:"Device 256GB Black",condition:"new",attributes_json:'{"storage":"256GB","color":"black"}'};
 describe("buyback-driven product discovery",()=>{
  it("deduplicates primarily by JAN",()=>expect(candidateIdentity(quote)).toBe("jan:4549995000000:new"));
@@ -7,6 +7,7 @@ describe("buyback-driven product discovery",()=>{
  it("builds queries in model, JAN, then name/attribute order",()=>{expect(discoveryQuery(quote)).toBe("ABC-123");expect(discoveryQuery({...quote,model_number:null})).toBe("4549995000000");expect(discoveryQuery({...quote,jan:null,model_number:null})).toContain("256GB black");});
  it("derives a strict target and a bounded discovery ceiling",()=>expect(purchaseTargets(105000,5000,1000)).toEqual({target:99000,ceiling:102000}));
  it("matches Rakuten caption JAN even when the title omits it",()=>expect(rakutenIdentityMatches({...quote,model_number:null},{itemName:"Device 256GB Black",itemCaption:"JAN 4549995000000",catchcopy:"新品"})).toBe(true));
+ it("uses a product name or embedded Japanese model instead of a JAN-only Rakuten keyword",()=>{expect(rakutenDiscoveryQuery({...quote,model_number:null,product_name:"Apple iPhone16 Pro Max 1TB 送料無料"})).toBe("Apple iPhone16 Pro Max 1TB");expect(rakutenDiscoveryQuery({...quote,model_number:null,product_name:"iPad Air MH5T4J/A 128GB"})).toBe("MH5T4J/A");});
  it("rejects used or refurbished Rakuten listings",()=>expect(rakutenIdentityMatches({...quote,jan:null},{itemName:"Device ABC-123 整備済品",itemCaption:"",catchcopy:""})).toBe(false));
  it("searches Rakuten below the inverse-price ceiling and keeps exact model matches",async()=>{
   let requested:URL|undefined;
@@ -19,4 +20,5 @@ describe("buyback-driven product discovery",()=>{
   const result=await searchRakuten(candidate,"app","access",new Date("2026-08-30T00:00:00Z"),fetcher as typeof fetch);
   expect(requested?.searchParams.get("maxPrice")).toBe("100000");expect(requested?.searchParams.get("sort")).toBe("+itemPrice");expect(result).toHaveLength(1);expect(result[0]).toMatchObject({source:"rakuten-discovery",externalId:"shop:1",priceYen:97800,purchasable:true});
  });
+ it("retries Rakuten 429 responses with bounded exponential backoff",async()=>{let calls=0;const waits:number[]=[];const fetcher=async()=>{calls++;return calls<3?new Response("rate limited",{status:429}):new Response(JSON.stringify({items:[]}),{status:200})};const candidate={id:1,canonical_product_id:1,jan:null,model_number:"CFI-2000A01",product_name:"PlayStation 5",brand:"Sony",category:"game",condition:"new",attributes_json:"{}",best_buyback_price_yen:105000,search_query:"CFI-2000A01",discovery_ceiling_yen:100000};await expect(searchRakuten(candidate,"app","access",new Date("2026-08-30T00:00:00Z"),fetcher as typeof fetch,async ms=>{waits.push(ms)})).resolves.toEqual([]);expect(calls).toBe(3);expect(waits).toEqual([1000,2000]);});
 });
