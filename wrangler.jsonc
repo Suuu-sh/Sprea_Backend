@@ -3,7 +3,7 @@
   "name": "sprea-research",
   "main": "src/index.ts",
   "compatibility_date": "2025-08-23",
-  "triggers": { "crons": ["*/5 * * * *"] },
+  "triggers": { "crons": ["*/30 * * * *"] },
   "d1_databases": [{
     "binding": "DB",
     "database_name": "sprea-research",
