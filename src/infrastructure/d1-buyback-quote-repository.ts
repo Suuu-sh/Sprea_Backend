@@ -29,6 +29,18 @@ export class D1BuybackQuoteRepository implements BuybackQuoteRepository {
       JSON.stringify(quote.attributes), price, shipping, fee, quote.buybackStatus, quote.productUrl ?? null,
       quote.fetchedAt, quote.lastSeenAt, now, now, quote.matchConfidence ?? 0, quote.matchReason ?? "unresolved",
     ).run();
+    if (quote.jan && /^\d{8,14}$/.test(quote.jan)) {
+      const day = quote.fetchedAt.slice(0, 10);
+      await this.db.prepare(`INSERT INTO buyback_daily_stats
+        (jan,provider,day,latest_price,latest_fetched_at,updated_at)
+        VALUES(?,?,?,?,?,?)
+        ON CONFLICT(jan,provider,day) DO UPDATE SET
+          latest_price=excluded.latest_price,
+          latest_fetched_at=excluded.latest_fetched_at,
+          updated_at=excluded.updated_at
+        WHERE excluded.latest_fetched_at >= buyback_daily_stats.latest_fetched_at`)
+        .bind(quote.jan, quote.provider, day, price, quote.fetchedAt, now).run();
+    }
   }
   async findLatestByProductId(productId: string): Promise<BuybackQuote[]> { return this.query("product_id=?", productId, true); }
   async findLatestByJan(jan: string): Promise<BuybackQuote[]> { return jan.trim() ? this.query("jan=?", jan.trim(), true) : []; }

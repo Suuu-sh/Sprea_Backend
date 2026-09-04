@@ -3,7 +3,7 @@
   "name": "sprea-research",
   "main": "src/index.ts",
   "compatibility_date": "2025-08-23",
-  "triggers": { "crons": ["*/5 * * * *"] },
+  "triggers": { "crons": ["*/30 * * * *"] },
   "d1_databases": [{
     "binding": "DB",
     "database_name": "sprea-research",
@@ -16,7 +16,7 @@
     "preview_bucket_name": "sprea-models-preview"
   }],
   "vars": {
-    "COLLECTOR_MODE": "live",
+    "COLLECTOR_MODE": "disabled",
     "SPREA_ENV": "production",
     "SPREA_COLLECTOR_SOURCE": "yahoo",
     "ALLOWED_ORIGIN": "https://sprea-frontend.pages.dev",
