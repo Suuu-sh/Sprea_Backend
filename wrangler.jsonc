@@ -16,7 +16,7 @@
     "preview_bucket_name": "sprea-models-preview"
   }],
   "vars": {
-    "COLLECTOR_MODE": "live",
+    "COLLECTOR_MODE": "disabled",
     "SPREA_ENV": "production",
     "SPREA_COLLECTOR_SOURCE": "yahoo",
     "ALLOWED_ORIGIN": "https://sprea-frontend.pages.dev",
