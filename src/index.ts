@@ -70,7 +70,10 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
  if(request.method==="POST"&&path==="/admin/collect"){if(env.COLLECTOR_MODE==="mock")return json({error:"use /admin/run for local mock collection"},409);return json(await collectScheduled(env),202);}
  if(request.method==="POST"&&path==="/admin/discover"){const body=await request.json<{limit?:number}>().catch(()=>({} as {limit?:number}));return json(await runProductDiscovery(env,"manual",body.limit??10),202);}
  if(request.method==="GET"&&path==="/api/research/dashboard")return json(await dashboard(env.DB));
- if(request.method==="GET"&&path==="/api/research/discovery-candidates")return json(await discoveryCandidates(env.DB,url,Boolean(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG)));
+ if(request.method==="GET"&&path==="/api/research/discovery-candidates"){
+  const cache=await caches.open("sprea-discovery"),cacheKey=new Request(request.url,{method:"GET"}),cached=await cache.match(cacheKey);if(cached)return cached;
+  const response=json(await discoveryCandidates(env.DB,url,Boolean(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG)));response.headers.set("cache-control","public, max-age=120, stale-while-revalidate=300");ctx?.waitUntil(cache.put(cacheKey,response.clone()));return response;
+ }
  if(request.method==="GET"&&path==="/api/research/analytics")return json(await researchAnalytics(env.DB));
  if(request.method==="POST"&&path==="/api/research/discovery/run"){ctx?.waitUntil(runProductDiscovery(env,"manual",6).catch(error=>console.error("manual discovery failed",error)));return json({status:"started"},202);}
  if(request.method==="GET"&&path==="/api/portfolio")return json(await env.DB.prepare("SELECT * FROM research_paper_accounts WHERE id=1").first());
