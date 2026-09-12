@@ -75,7 +75,7 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
  if(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG)providers.set("amazon",candidate=>searchAmazonCreators(candidate,{clientId:env.AMAZON_CREATORS_CLIENT_ID!,clientSecret:env.AMAZON_CREATORS_CLIENT_SECRET!,partnerTag:env.AMAZON_PARTNER_TAG!},at));
  if(!providers.size)throw new Error("At least one retail discovery provider is required");
 
- // A minute-based cron can overlap a slow provider request. Do not start a second
+ // A frequent cron can overlap a slow provider request. Do not start a second
  // worker while the previous one is still active; the current queue item remains
  // pending and will be picked up on the next invocation.
  const active=await env.DB.prepare("SELECT id FROM product_discovery_runs WHERE status='running' AND started_at>=? ORDER BY id DESC LIMIT 1").bind(new Date(at.getTime()-10*60_000).toISOString()).first<{id:number}>();
@@ -87,8 +87,6 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
  const built=needsRebuild?await buildDiscoveryCandidates(env.DB,at):{quotes:0,candidates:Number(freshness?.candidates??0),canonical:Number(freshness?.candidates??0)};
  const settings=await env.DB.prepare("SELECT minimum_profit_yen,sale_shipping_yen,fees_yen FROM research_settings WHERE id=1").first<{minimum_profit_yen:number;sale_shipping_yen:number;fees_yen:number}>();
  const minimumProfit=Math.max(0,Number(settings?.minimum_profit_yen??5000)),saleCosts=Math.max(0,Number(settings?.sale_shipping_yen??0)+Number(settings?.fees_yen??0));
- const insert=await env.DB.prepare("INSERT INTO product_discovery_runs(trigger,status,quote_count,candidate_count,canonical_count,started_at) VALUES(?,'running',?,?,?,?)").bind(trigger,built.quotes,built.candidates,built.canonical,at.toISOString()).run(),runId=Number(insert.meta.last_row_id);
-
  // The provider state table is the durable exploration queue. Write state only
  // after a pair completes instead of creating 25k x N rows up front. `limit`
  // is a per-provider budget, so two providers can make progress independently
@@ -104,6 +102,8 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
     CASE WHEN s.last_searched_at IS NULL THEN 0 ELSE 1 END,
     c.buyback_provider_count DESC,c.best_buyback_price_yen DESC,s.last_searched_at
   LIMIT ?`).bind(...names,at.toISOString(),Math.max(1,Math.min(100,limit))*names.length).all<Candidate&{provider:string}>()).results;
+ if(!pairs.length)return{status:"idle",runId:0,...built,searched:0,retailFound:0,yahooFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0,providers:{}};
+ const insert=await env.DB.prepare("INSERT INTO product_discovery_runs(trigger,status,quote_count,candidate_count,canonical_count,started_at) VALUES(?,'running',?,?,?,?)").bind(trigger,built.quotes,built.candidates,built.canonical,at.toISOString()).run(),runId=Number(insert.meta.last_row_id);
  let purchasable=0,profitable=0,threshold=0,buys=0,failures=0;
  const foundCandidates=new Set<number>(),searchedCandidates=new Set<number>(),providerStats:Record<string,{searched:number;found:number;listings:number;profitable:number;threshold:number;failures:number}>={},lastRequest=new Map<string,number>();
  for(const name of names)providerStats[name]={searched:0,found:0,listings:0,profitable:0,threshold:0,failures:0};
