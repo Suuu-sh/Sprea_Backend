@@ -82,6 +82,30 @@ const waitForRetry = async (response: Response, sleeper: Sleep): Promise<void> =
   await sleeper(milliseconds);
 };
 
+/** Archive a verified gzip snapshot in R2. */
+export async function archiveKaitorixCsv(
+  env: Pick<CsvArchiveEnv, "MODELS">,
+  body: ArrayBuffer,
+  at = new Date(),
+  date = jstDate(at),
+  generated = false,
+): Promise<KaitorixCsvDownloadResult> {
+  if (body.byteLength < 2 || new Uint8Array(body, 0, 2)[0] !== 0x1f || new Uint8Array(body, 0, 2)[1] !== 0x8b) {
+    throw new Error("KaitoriX CSV upload was not gzip data");
+  }
+  const objectKey = `kaitorix/csv/${date}.csv.gz`;
+  await env.MODELS.put(objectKey, body, {
+    httpMetadata: { contentType: "application/gzip", contentEncoding: "gzip" },
+    customMetadata: {
+      source: "kaitorix",
+      snapshotDateJst: date,
+      downloadedAt: at.toISOString(),
+      generatedToday: String(generated),
+    },
+  });
+  return { date, objectKey, bytes: body.byteLength, generated };
+}
+
 /** Generate (if needed), download, and archive today's KaitoriX CSV export. */
 export async function downloadKaitorixCsv(
   env: CsvArchiveEnv,
@@ -126,23 +150,7 @@ export async function downloadKaitorixCsv(
   }
   if (!downloadResponse) throw new Error("KaitoriX CSV download returned no response");
 
-  const body = await downloadResponse.arrayBuffer();
-  if (body.byteLength < 2 || new Uint8Array(body, 0, 2)[0] !== 0x1f || new Uint8Array(body, 0, 2)[1] !== 0x8b) {
-    throw new Error("KaitoriX CSV download was not gzip data");
-  }
-
-  const date = jstDate(at);
-  const objectKey = `kaitorix/csv/${date}.csv.gz`;
-  await env.MODELS.put(objectKey, body, {
-    httpMetadata: { contentType: "application/gzip", contentEncoding: "gzip" },
-    customMetadata: {
-      source: "kaitorix",
-      snapshotDateJst: date,
-      downloadedAt: at.toISOString(),
-      generatedToday: String(generated),
-    },
-  });
-  return { date, objectKey, bytes: body.byteLength, generated };
+  return archiveKaitorixCsv(env, await downloadResponse.arrayBuffer(), at, jstDate(at), generated);
 }
 
 export { jstDate };
