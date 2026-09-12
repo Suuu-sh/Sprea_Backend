@@ -30,7 +30,7 @@ GitHub Actions は UTC 00:10（日本時間 09:10）に次の処理を自動実�
 4. Sprea Worker の `/admin/kaitorix-csv/upload` へ gzip のまま転送し、R2 の `kaitorix/csv/YYYY-MM-DD.csv.gz` に保存
 5. Actions側でCSVを展開し、JANが正確で新品・未使用、アクセサリー以外、商品/買取価格が10,000円以上の行だけを候補化（買取価格上位10,000件まで。`KAITORIX_MAX_CANDIDATES`で調整可能）
 6. 候補を500件ずつ `/admin/kaitorix-csv/import-candidates` へ送り、D1には商品ごとの最高買取価格と上位店舗情報だけを保存
-7. Spreaの探索キューを起動し、販売APIを候補ごとに順番に検索
+7. Spreaの探索キューを起動し、販売APIを候補ごとに順番に検索（Workerは5分ごとに進める）
 8. `collector_runs` に成功・失敗と保存先を記録
 
 APIキーは GitHub Actions Secret `KAITORIX_API_KEY`、転送認証には既存の `ADMIN_TOKEN` を使います。手動実行は Actions の `Download KaitoriX CSV` から行えます。Workerの受信確認は `/api/kaitorix/csv/status` でできます。
@@ -38,3 +38,5 @@ APIキーは GitHub Actions Secret `KAITORIX_API_KEY`、転送認証には既存
 Workerから買取Xへ直接アクセスすると買取X側のエッジ保護で403になるため、外向きAPI取得はGitHub Actions、WorkerはR2保存とステータス記録に分担しています。
 
 CSV全件を毎日そのままD1へ展開することはしません。25,000商品・37店舗のスナップショットを約75,000件の見積もりに分解すると、D1無料枠の読み書きを再び圧迫するためです。原本はR2に保持し、Actionsで高額かつ本人確認できる候補だけを抽出します。D1には商品ごとの最高買取価格を投影し、上位店舗と店舗数は属性として残します。候補インポートは同じJANを上書きするため、途中で失敗しても同じ日のActionsを再実行できます。販売APIの探索は候補ごとのプロバイダー状態をキューとして保存し、失敗後も次回から再開します。
+
+探索キューが空のときは実行履歴を書き込まず、Dashboard・Analyticsなどの集計APIは短時間キャッシュします。これにより、結果の更新を止めずにアイドル時のD1読み書きを抑えます。
