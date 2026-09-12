@@ -106,8 +106,10 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
   return json({lastRun:rows[0]??null,runs:rows,sources});
  }
  if(request.method==="GET"&&path==="/api/kaitorix/csv/status"){
-  const latest=await env.DB.prepare("SELECT run_id runId,source,status,item_count itemCount,message,started_at startedAt,finished_at finishedAt FROM collector_runs WHERE source='kaitorix-csv' ORDER BY id DESC LIMIT 1").first<any>();
-  return json({configured:Boolean(env.KAITORIX_API_KEY),today:jstDate(new Date()),latest:latest??null});
+  const today=jstDate(new Date()),objectKey=`kaitorix/csv/${today}.csv.gz`,archived=Boolean(await env.MODELS.head(objectKey));
+  let latest:null|Record<string,unknown>=null;
+  try{latest=await env.DB.prepare("SELECT run_id runId,source,status,item_count itemCount,message,started_at startedAt,finished_at finishedAt FROM collector_runs WHERE source='kaitorix-csv' ORDER BY id DESC LIMIT 1").first<Record<string,unknown>>()??null;}catch(error){console.warn("KaitoriX CSV status metadata unavailable",error);}
+  return json({configured:Boolean(env.KAITORIX_API_KEY),today,objectKey,archivedToday:archived,latest});
  }
  return json({error:"not found"},404);
 }
@@ -130,19 +132,21 @@ async function collectScheduled(env:Env,at=new Date()){
 }
 
 async function runKaitorixCsv(env:Env,at=new Date()){
- const date=jstDate(at),runId=`worker-kaitorix-csv-${date}`;
- const existing=await env.DB.prepare("SELECT status,run_id runId,message,item_count itemCount,started_at startedAt,finished_at finishedAt FROM collector_runs WHERE run_id=?").bind(runId).first<any>();
+ const date=jstDate(at),runId=`worker-kaitorix-csv-${date}`,objectKey=`kaitorix/csv/${date}.csv.gz`;
+ if(await env.MODELS.head(objectKey))return{skipped:true,reason:"already_archived_today",runId,source:"kaitorix-csv",date,objectKey};
+ let existing:any;
+ try{existing=await env.DB.prepare("SELECT status,run_id runId,message,item_count itemCount,started_at startedAt,finished_at finishedAt FROM collector_runs WHERE run_id=?").bind(runId).first<any>();}catch(error){console.warn("KaitoriX CSV run metadata unavailable",error);}
  if(existing?.status==="succeeded")return{skipped:true,reason:"already_succeeded_today",...existing};
  if(existing?.status==="running")return{skipped:true,reason:"already_running",...existing};
- await env.DB.prepare("INSERT INTO collector_runs(run_id,source,status,item_count,message,started_at,finished_at) VALUES(?,?, 'running',0,'',?,'') ON CONFLICT(run_id) DO UPDATE SET status='running',item_count=0,message='',started_at=excluded.started_at,finished_at='' ").bind(runId,"kaitorix-csv",at.toISOString()).run();
+ try{await env.DB.prepare("INSERT INTO collector_runs(run_id,source,status,item_count,message,started_at,finished_at) VALUES(?,?, 'running',0,'',?,'') ON CONFLICT(run_id) DO UPDATE SET status='running',item_count=0,message='',started_at=excluded.started_at,finished_at='' ").bind(runId,"kaitorix-csv",at.toISOString()).run();}catch(error){console.warn("KaitoriX CSV run start metadata unavailable",error);}
  try{
   const result=await downloadKaitorixCsv(env,at);
   const message=`archived ${result.objectKey} (${result.bytes} bytes)`;
-  await env.DB.prepare("UPDATE collector_runs SET status='succeeded',item_count=?,message=?,finished_at=? WHERE run_id=?").bind(1,message,new Date().toISOString(),runId).run();
+  try{await env.DB.prepare("UPDATE collector_runs SET status='succeeded',item_count=?,message=?,finished_at=? WHERE run_id=?").bind(1,message,new Date().toISOString(),runId).run();}catch(error){console.warn("KaitoriX CSV success metadata unavailable",error);}
   return{runId,source:"kaitorix-csv",status:"succeeded",date:result.date,objectKey:result.objectKey,bytes:result.bytes,generated:result.generated};
  }catch(error){
   const message=error instanceof Error?error.message:"KaitoriX CSV download failed";
-  await env.DB.prepare("UPDATE collector_runs SET status='failed',message=?,finished_at=? WHERE run_id=?").bind(message.slice(0,1000),new Date().toISOString(),runId).run();
+  try{await env.DB.prepare("UPDATE collector_runs SET status='failed',message=?,finished_at=? WHERE run_id=?").bind(message.slice(0,1000),new Date().toISOString(),runId).run();}catch(metadataError){console.warn("KaitoriX CSV failure metadata unavailable",metadataError);}
   throw error;
  }
 }
