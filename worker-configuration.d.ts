@@ -15,5 +15,7 @@ interface Env {
   ADMIN_TOKEN?: string;
   INGEST_API_KEY?: string;
   SPREA_INGEST_TOKEN?: string;
+  /** KaitoriX Open API key used by the daily CSV snapshot job. */
+  KAITORIX_API_KEY?: string;
   ALLOWED_ORIGIN?: string;
 }

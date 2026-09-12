@@ -7,6 +7,7 @@ import {D1BuybackQuoteRepository} from "./infrastructure/d1-buyback-quote-reposi
 import {D1ProductResolver} from "./infrastructure/d1-product-resolver";
 import {discoveryFunnel,runProductDiscovery} from "./discovery";
 import {researchAnalytics} from "./analytics";
+import {downloadKaitorixCsv,jstDate} from "./application/kaitorix-csv-download";
 
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8"}});
 const isAuthorized=(r:Request,token?:string)=>Boolean(token)&&r.headers.get("authorization")===`Bearer ${token}`;
@@ -75,6 +76,10 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
  if(request.method==="POST"&&path==="/api/ingest/listings") {if(!isAuthorized(request,env.INGEST_API_KEY))return json({error:"unauthorized"},401);const raw=await request.json<unknown>().catch(()=>null) as IngestPayload|null;if(!raw||typeof raw.runId!=="string"||!raw.runId||typeof raw.source!=="string"||!raw.source||!Array.isArray(raw.listings)||raw.listings.length>500)return json({error:"invalid payload"},400);const listings=raw.listings.map(normalizeWireListing);if(!listings.every(validListing)||listings.some(x=>x.source!==raw.source))return json({error:"invalid payload"},400);const body={...raw,listings} as IngestPayload;const started=validTime(body.startedAt)?body.startedAt!:new Date().toISOString();await env.DB.prepare("INSERT INTO collector_runs(run_id,source,status,item_count,message,started_at,finished_at) VALUES(?,?, 'running',0,'',?,'') ON CONFLICT(run_id) DO NOTHING").bind(body.runId,body.source,started).run();try{const at=new Date(Math.max(...body.listings.map(x=>Date.parse(x.capturedAt)),Date.now()));const result=await ingestListings(env.DB,body.listings,at);const finished=validTime(body.finishedAt)?body.finishedAt!:new Date().toISOString();await env.DB.prepare("UPDATE collector_runs SET status='succeeded',item_count=?,message=?,finished_at=? WHERE run_id=?").bind(body.listings.length,`accepted ${body.listings.length} listings`,finished,body.runId).run();return json({runId:body.runId,...result},202);}catch(error){await env.DB.prepare("UPDATE collector_runs SET status='failed',message=?,finished_at=? WHERE run_id=?").bind(error instanceof Error?error.message.slice(0,1000):"ingest failed",new Date().toISOString(),body.runId).run();return json({error:error instanceof Error?error.message:"ingest failed"},422);}}
  if(request.method==="POST"&&path==="/admin/run"){if(!isAuthorized(request,env.ADMIN_TOKEN))return json({error:"unauthorized"},401);if(env.COLLECTOR_MODE!=="mock")return json({error:"mock collector is disabled"},409);const at=new Date(),runId=`admin-mock-${at.toISOString()}`;await env.DB.prepare("INSERT INTO collector_runs(run_id,source,status,item_count,message,started_at,finished_at) VALUES(?,?, 'running',0,'',?,'')").bind(runId,"mock",at.toISOString()).run();try{const result=await runPipeline(env.DB,new MockCollector(),at);await env.DB.prepare("UPDATE collector_runs SET status='succeeded',item_count=?,message=?,finished_at=? WHERE run_id=?").bind(result.observations,`accepted ${result.observations} listings; created ${result.opportunities} opportunities`,new Date().toISOString(),runId).run();return json(result);}catch(error){await env.DB.prepare("UPDATE collector_runs SET status='failed',message=?,finished_at=? WHERE run_id=?").bind(error instanceof Error?error.message.slice(0,1000):"collector failed",new Date().toISOString(),runId).run();throw error;}}
  if(request.method==="POST"&&path==="/admin/collect"){if(env.COLLECTOR_MODE==="mock")return json({error:"use /admin/run for local mock collection"},409);return json(await collectScheduled(env),202);}
+ if(request.method==="POST"&&path==="/admin/kaitorix-csv/run"){
+  if(!isAuthorized(request,env.ADMIN_TOKEN))return json({error:"unauthorized"},401);
+  return json(await runKaitorixCsv(env),202);
+ }
  if(request.method==="POST"&&path==="/admin/discover"){const body=await request.json<{limit?:number}>().catch(()=>({} as {limit?:number}));return json(await runProductDiscovery(env,"manual",body.limit??30),202);}
  if(request.method==="GET"&&path==="/api/research/dashboard")return json(await dashboard(env.DB));
  if(request.method==="GET"&&path==="/api/research/discovery-candidates"){
@@ -97,8 +102,12 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
   const observed=(await env.DB.prepare(`SELECT provider source,'buyback' side,COUNT(*) itemCount,MAX(fetched_at) lastSuccessAt FROM buyback_quotes GROUP BY provider UNION ALL SELECT source,'retail' side,COUNT(*) itemCount,MAX(captured_at) lastSuccessAt FROM product_discovery_results GROUP BY source`).all<any>()).results;
   const sources=observed.map(source=>({...source,itemCount:Number(source.itemCount),status:"connected"}));
   const ensure=(source:string,side:string,configured:boolean)=>{if(configured&&!sources.some(item=>item.source===source))sources.push({source,side,itemCount:0,lastSuccessAt:null,status:"configured"})};
-  ensure("yahoo-discovery","retail",Boolean(env.YAHOO_CLIENT_ID));ensure("rakuten-discovery","retail",Boolean(env.RAKUTEN_APPLICATION_ID&&env.RAKUTEN_ACCESS_KEY));ensure("amazon-discovery","retail",Boolean(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG));
+  ensure("yahoo-discovery","retail",Boolean(env.YAHOO_CLIENT_ID));ensure("rakuten-discovery","retail",Boolean(env.RAKUTEN_APPLICATION_ID&&env.RAKUTEN_ACCESS_KEY));ensure("amazon-discovery","retail",Boolean(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG));ensure("kaitorix-csv","buyback",Boolean(env.KAITORIX_API_KEY));
   return json({lastRun:rows[0]??null,runs:rows,sources});
+ }
+ if(request.method==="GET"&&path==="/api/kaitorix/csv/status"){
+  const latest=await env.DB.prepare("SELECT run_id runId,source,status,item_count itemCount,message,started_at startedAt,finished_at finishedAt FROM collector_runs WHERE source='kaitorix-csv' ORDER BY id DESC LIMIT 1").first<any>();
+  return json({configured:Boolean(env.KAITORIX_API_KEY),today:jstDate(new Date()),latest:latest??null});
  }
  return json({error:"not found"},404);
 }
@@ -120,7 +129,25 @@ async function collectScheduled(env:Env,at=new Date()){
  }
 }
 
+async function runKaitorixCsv(env:Env,at=new Date()){
+ const date=jstDate(at),runId=`worker-kaitorix-csv-${date}`;
+ const existing=await env.DB.prepare("SELECT status,run_id runId,message,item_count itemCount,started_at startedAt,finished_at finishedAt FROM collector_runs WHERE run_id=?").bind(runId).first<any>();
+ if(existing?.status==="succeeded")return{skipped:true,reason:"already_succeeded_today",...existing};
+ if(existing?.status==="running")return{skipped:true,reason:"already_running",...existing};
+ await env.DB.prepare("INSERT INTO collector_runs(run_id,source,status,item_count,message,started_at,finished_at) VALUES(?,?, 'running',0,'',?,'') ON CONFLICT(run_id) DO UPDATE SET status='running',item_count=0,message='',started_at=excluded.started_at,finished_at='' ").bind(runId,"kaitorix-csv",at.toISOString()).run();
+ try{
+  const result=await downloadKaitorixCsv(env,at);
+  const message=`archived ${result.objectKey} (${result.bytes} bytes)`;
+  await env.DB.prepare("UPDATE collector_runs SET status='succeeded',item_count=?,message=?,finished_at=? WHERE run_id=?").bind(1,message,new Date().toISOString(),runId).run();
+  return{runId,source:"kaitorix-csv",status:"succeeded",date:result.date,objectKey:result.objectKey,bytes:result.bytes,generated:result.generated};
+ }catch(error){
+  const message=error instanceof Error?error.message:"KaitoriX CSV download failed";
+  await env.DB.prepare("UPDATE collector_runs SET status='failed',message=?,finished_at=? WHERE run_id=?").bind(message.slice(0,1000),new Date().toISOString(),runId).run();
+  throw error;
+ }
+}
+
 const isAllowedOrigin=(origin:string,configured?:string)=>{if(!origin)return false;if(origin===configured)return true;try{const url=new URL(origin);return url.protocol==="https:"&&(url.hostname==="sprea-frontend.pages.dev"||url.hostname.endsWith(".sprea-frontend.pages.dev"));}catch{return false;}};
 const addCorsHeaders=(response:Response,cors:Record<string,string>):Response=>{if(!Object.keys(cors).length)return response;const mutable=new Response(response.body,response);for(const[k,v]of Object.entries(cors))mutable.headers.set(k,v);return mutable;};
 
-export default{async fetch(request:Request,env:Env,ctx?:ExecutionContext):Promise<Response>{const origin=request.headers.get("origin")??"",allowed=isAllowedOrigin(origin,env.ALLOWED_ORIGIN);const cors:Record<string,string>=allowed?{"access-control-allow-origin":origin,"access-control-allow-methods":"GET,POST,PUT,OPTIONS","access-control-allow-headers":"authorization,content-type","vary":"Origin"}:{};if(request.method==="OPTIONS")return new Response(null,{status:allowed?204:403,headers:cors});try{const response=await route(request,env,ctx);return addCorsHeaders(response,cors);}catch(error){console.error(error);const message=error instanceof Error?error.message:"";const quota=/(?:D1|database|rows? read|free tier).*(?:limit|exceed)|exceed.*(?:D1|rows? read|free tier)/i.test(message);const response=json({error:quota?"データ読み取り上限に達しました。無料枠は毎日9:00（日本時間）にリセットされます。":"internal server error",code:quota?"d1_daily_read_limit":"internal_error"},quota?503:500);return addCorsHeaders(response,cors);}},async scheduled(controller:ScheduledController,env:Env,ctx:ExecutionContext){const discoveryConfigured=Boolean(env.YAHOO_CLIENT_ID||(env.RAKUTEN_APPLICATION_ID&&env.RAKUTEN_ACCESS_KEY)||(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG));if(controller.cron==="* * * * *"){if(discoveryConfigured)ctx.waitUntil(runProductDiscovery(env,"scheduled",30).catch(error=>console.error("scheduled discovery failed",error)));return;}ctx.waitUntil((async()=>{await evaluateDue(env.DB);await collectScheduled(env);})());}} satisfies ExportedHandler<Env>;
+export default{async fetch(request:Request,env:Env,ctx?:ExecutionContext):Promise<Response>{const origin=request.headers.get("origin")??"",allowed=isAllowedOrigin(origin,env.ALLOWED_ORIGIN);const cors:Record<string,string>=allowed?{"access-control-allow-origin":origin,"access-control-allow-methods":"GET,POST,PUT,OPTIONS","access-control-allow-headers":"authorization,content-type","vary":"Origin"}:{};if(request.method==="OPTIONS")return new Response(null,{status:allowed?204:403,headers:cors});try{const response=await route(request,env,ctx);return addCorsHeaders(response,cors);}catch(error){console.error(error);const message=error instanceof Error?error.message:"";const quota=/(?:D1|database|rows? read|free tier).*(?:limit|exceed)|exceed.*(?:D1|rows? read|free tier)/i.test(message);const response=json({error:quota?"データ読み取り上限に達しました。無料枠は毎日9:00（日本時間）にリセットされます。":"internal server error",code:quota?"d1_daily_read_limit":"internal_error"},quota?503:500);return addCorsHeaders(response,cors);}},async scheduled(controller:ScheduledController,env:Env,ctx:ExecutionContext){const discoveryConfigured=Boolean(env.YAHOO_CLIENT_ID||(env.RAKUTEN_APPLICATION_ID&&env.RAKUTEN_ACCESS_KEY)||(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG));if(controller.cron==="10 0 * * *"){if(env.KAITORIX_API_KEY)ctx.waitUntil(runKaitorixCsv(env).catch(error=>console.error("scheduled KaitoriX CSV download failed",error)));return;}if(controller.cron==="* * * * *"){if(discoveryConfigured)ctx.waitUntil(runProductDiscovery(env,"scheduled",30).catch(error=>console.error("scheduled discovery failed",error)));return;}ctx.waitUntil((async()=>{await evaluateDue(env.DB);await collectScheduled(env);})());}} satisfies ExportedHandler<Env>;
