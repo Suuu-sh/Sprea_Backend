@@ -1,0 +1,30 @@
+name: Download KaitoriX CSV
+
+on:
+  schedule:
+    # 09:10 JST (UTC 00:10), after KaitoriX's daily reset.
+    - cron: "10 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaitorix-csv-download
+  cancel-in-progress: false
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KAITORIX_API_KEY: ${{ secrets.KAITORIX_API_KEY }}
+      SPREA_ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+      SPREA_WORKER_URL: https://sprea-research.suuu-sh.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download and archive today's CSV
+        run: node scripts/kaitorix-csv-download.mjs
