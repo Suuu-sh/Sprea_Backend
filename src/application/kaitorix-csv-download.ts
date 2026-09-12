@@ -36,6 +36,11 @@ type CsvArchiveEnv = {
 const authHeaders = (apiKey: string): HeadersInit => ({
   authorization: `Bearer ${apiKey}`,
   accept: "application/json",
+  // KaitoriX's edge protection rejects requests without a browser-compatible
+  // user agent/origin even when the bearer key is valid.
+  "user-agent": "Mozilla/5.0 (compatible; Sprea daily CSV sync)",
+  origin: "https://sprea-frontend.pages.dev",
+  referer: "https://sprea-frontend.pages.dev/",
 });
 
 const jstDate = (at: Date): string => {
