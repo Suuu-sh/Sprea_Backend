@@ -28,11 +28,10 @@ export async function importKaitorixCsvCandidates(
   if (!validDate(date)) throw new Error("snapshot date must be YYYY-MM-DD");
   if (candidates.length > 500 || (candidates.length === 0 && !replace)) throw new Error("candidates must contain between 1 and 500 items, or be empty for a replacement batch");
 
-  // The first batch of a snapshot replaces yesterday's active projection. The
-  // following batches are additive so an interrupted upload can be resumed.
-  if (replace) {
-    await db.prepare("UPDATE buyback_quotes SET buyback_status='unavailable',updated_at=? WHERE source_type='csv' AND json_extract(attributes_json,'$.source')='kaitorix-csv'").bind(at.toISOString()).run();
-  }
+  // The first batch is only a marker for the caller.  We do not scan and
+  // update every historical CSV row here: that full-table UPDATE would consume
+  // D1's read quota.  Active-snapshot filtering is applied when candidates and
+  // buyback listings are queried instead.
 
   const statements: D1PreparedStatement[] = [];
   let accepted = 0;
