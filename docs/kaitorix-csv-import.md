@@ -28,7 +28,7 @@ GitHub Actions は UTC 00:10（日本時間 09:10）に次の処理を自動実�
 2. 未生成なら `/api/data-export/today/generate` を 1 回だけ呼び出す（409 は生成済みとして継続）
 3. `/api/data-export/today/download` を取得
 4. Sprea Worker の `/admin/kaitorix-csv/upload` へ gzip のまま転送し、R2 の `kaitorix/csv/YYYY-MM-DD.csv.gz` に保存
-5. Actions側でCSVを展開し、JANが正確で新品・未使用、アクセサリー以外、商品/買取価格が10,000円以上の行だけを候補化
+5. Actions側でCSVを展開し、JANが正確で新品・未使用、アクセサリー以外、商品/買取価格が10,000円以上の行だけを候補化（買取価格上位10,000件まで。`KAITORIX_MAX_CANDIDATES`で調整可能）
 6. 候補を500件ずつ `/admin/kaitorix-csv/import-candidates` へ送り、D1には商品ごとの最高買取価格と上位店舗情報だけを保存
 7. Spreaの探索キューを起動し、販売APIを候補ごとに順番に検索
 8. `collector_runs` に成功・失敗と保存先を記録
