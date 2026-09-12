@@ -8,7 +8,7 @@ const sourceTypes: BuybackSourceType[] = ["scraper", "csv", "manual", "api", "pa
 const categories: ProductCategory[] = ["smartphone", "tablet", "game_console", "camera", "computer", "home_appliance", "audio", "other"];
 
 export type BuybackQuoteInput = {
-  externalId?: unknown; productName?: unknown; jan?: unknown; modelNumber?: unknown; brand?: unknown;
+  provider?: unknown; externalId?: unknown; productName?: unknown; jan?: unknown; modelNumber?: unknown; brand?: unknown;
   category?: unknown; condition?: unknown; attributes?: unknown; price?: unknown; shippingFee?: unknown;
   fee?: unknown; buybackStatus?: unknown; productUrl?: unknown; fetchedAt?: unknown;
 };
@@ -41,11 +41,12 @@ export class ImportBuybackQuotes {
   async execute(input: ImportBuybackQuotesInput): Promise<ImportQuoteResult[]> {
     const results: ImportQuoteResult[] = [];
     for (const [index, raw] of input.quotes.entries()) {
-      const errors = validateBuybackQuote(input.provider, input.sourceType, raw);
+      const provider = optionalString(raw.provider) ?? optionalString(input.provider);
+      const errors = validateBuybackQuote(provider, input.sourceType, raw);
       if (errors.length) { results.push({index, accepted: false, errors}); continue; }
       const now = new Date().toISOString();
       const quote: BuybackQuote = {
-        id: crypto.randomUUID(), provider: String(input.provider).trim(), sourceType: input.sourceType as BuybackSourceType,
+        id: crypto.randomUUID(), provider: provider!, sourceType: input.sourceType as BuybackSourceType,
         externalId: optionalString(raw.externalId), productName: String(raw.productName).trim(), jan: optionalString(raw.jan),
         modelNumber: optionalString(raw.modelNumber), brand: optionalString(raw.brand), category: raw.category as ProductCategory | undefined,
         condition: raw.condition as ProductCondition, attributes: (raw.attributes ?? {}) as Record<string, unknown>,
