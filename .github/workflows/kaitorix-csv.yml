@@ -16,11 +16,15 @@ concurrency:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       KAITORIX_API_KEY: ${{ secrets.KAITORIX_API_KEY }}
       SPREA_ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
       SPREA_WORKER_URL: https://sprea-research.suuu-sh.workers.dev
+      # Keep low-value and accessory rows out of D1 before the retail APIs run.
+      KAITORIX_MIN_PRODUCT_PRICE_YEN: 10000
+      KAITORIX_MAX_STORES_PER_PRODUCT: 2
+      KAITORIX_MAX_CANDIDATES: 10000
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
