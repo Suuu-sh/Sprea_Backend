@@ -51,11 +51,17 @@ const jstDate = (at: Date): string => {
 
 const responseError = async (response: Response, operation: string): Promise<Error> => {
   let detail = "";
+  const copy = response.clone();
   try {
     const payload = await response.json() as { error?: unknown; message?: unknown };
     detail = typeof payload.error === "string" ? payload.error : typeof payload.message === "string" ? payload.message : "";
   } catch {
-    // Keep the API key and response body out of logs when KaitoriX returns HTML.
+    try {
+      const text = await copy.text();
+      detail = text.replace(/\s+/g, " ").trim().slice(0, 160);
+    } catch {
+      // Keep the API key and response body out of logs when KaitoriX returns an unreadable response.
+    }
   }
   return new Error(`${operation} failed (${response.status})${detail ? `: ${detail.slice(0, 160)}` : ""}`);
 };
