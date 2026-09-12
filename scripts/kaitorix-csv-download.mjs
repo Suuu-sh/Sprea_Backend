@@ -153,7 +153,16 @@ for (let index = 0; index < extracted.candidates.length || (index === 0 && extra
   const response = await fetch(`${workerUrl}/admin/kaitorix-csv/import-candidates`, {
     method: "POST",
     headers: {authorization: `Bearer ${adminToken}`, "content-type": "application/json"},
-    body: JSON.stringify({date, candidates: batch, replace: index === 0}),
+    body: JSON.stringify({
+      date,
+      candidates: batch,
+      replace: index === 0,
+      rowsRead: extracted.rowsRead,
+      totalCandidates: extracted.candidates.length,
+      complete: index + batch.length >= extracted.candidates.length,
+      bytes: bytes.byteLength,
+      objectKey: result.objectKey,
+    }),
   });
   await requireOk(response, "Sprea CSV candidate import");
   const importedBatch = await response.json();

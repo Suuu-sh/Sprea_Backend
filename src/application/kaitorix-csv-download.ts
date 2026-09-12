@@ -28,6 +28,17 @@ export type KaitorixCsvDownloadResult = {
   generated: boolean;
 };
 
+export type KaitorixCsvProgress = {
+  status: "archived" | "importing" | "completed";
+  date: string;
+  objectKey: string;
+  bytes?: number;
+  rowsRead?: number;
+  totalCandidates?: number;
+  importedCandidates?: number;
+  updatedAt: string;
+};
+
 type CsvArchiveEnv = {
   KAITORIX_API_KEY?: string;
   MODELS: R2Bucket;
@@ -53,6 +64,34 @@ const jstDate = (at: Date): string => {
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
 };
+
+const progressKey = (date: string): string => `kaitorix/csv/${date}.status.json`;
+
+/** Read the small progress sidecar without touching D1. */
+export async function readKaitorixCsvProgress(
+  env: Pick<CsvArchiveEnv, "MODELS">,
+  date: string,
+): Promise<KaitorixCsvProgress | null> {
+  const object = await env.MODELS.get(progressKey(date));
+  if (!object) return null;
+  try {
+    const value = JSON.parse(await object.text()) as Partial<KaitorixCsvProgress>;
+    if (value.date !== date || typeof value.status !== "string" || typeof value.updatedAt !== "string") return null;
+    return value as KaitorixCsvProgress;
+  } catch {
+    return null;
+  }
+}
+
+/** Write the small progress sidecar. Failure is handled by callers as non-critical metadata. */
+export async function writeKaitorixCsvProgress(
+  env: Pick<CsvArchiveEnv, "MODELS">,
+  progress: KaitorixCsvProgress,
+): Promise<void> {
+  await env.MODELS.put(progressKey(progress.date), JSON.stringify(progress), {
+    httpMetadata: { contentType: "application/json" },
+  });
+}
 
 const responseError = async (response: Response, operation: string): Promise<Error> => {
   let detail = "";
@@ -103,6 +142,18 @@ export async function archiveKaitorixCsv(
       generatedToday: String(generated),
     },
   });
+  try {
+    await writeKaitorixCsvProgress(env, {
+      status: "archived",
+      date,
+      objectKey,
+      bytes: body.byteLength,
+      importedCandidates: 0,
+      updatedAt: at.toISOString(),
+    });
+  } catch (error) {
+    console.warn("KaitoriX CSV progress sidecar unavailable", error);
+  }
   return { date, objectKey, bytes: body.byteLength, generated };
 }
 

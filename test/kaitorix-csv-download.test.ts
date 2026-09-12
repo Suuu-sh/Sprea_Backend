@@ -4,8 +4,8 @@ import {downloadKaitorixCsv} from "../src/application/kaitorix-csv-download";
 const gzip = new Uint8Array([0x1f,0x8b,0x08,0x00,0x00,0x00]);
 
 function archive(){
-  let saved:{key:string;body:ArrayBuffer;options:unknown}|undefined;
-  return {bucket:{put:async(key:string,body:ArrayBuffer,options:unknown)=>{saved={key,body,options};}},get:()=>saved};
+  const writes:Array<{key:string;body:ArrayBuffer;options:unknown}>=[];
+  return {bucket:{put:async(key:string,body:ArrayBuffer,options:unknown)=>{writes.push({key,body,options});}},get:()=>writes.find(write=>write.key.endsWith(".csv.gz"))};
 }
 
 describe("KaitoriX CSV download",()=>{
