@@ -8,7 +8,7 @@ import {D1BuybackQuoteRepository} from "./infrastructure/d1-buyback-quote-reposi
 import {D1ProductResolver} from "./infrastructure/d1-product-resolver";
 import {discoveryFunnel,runProductDiscovery} from "./discovery";
 import {researchAnalytics} from "./analytics";
-import {archiveKaitorixCsv,downloadKaitorixCsv,jstDate} from "./application/kaitorix-csv-download";
+import {archiveKaitorixCsv,downloadKaitorixCsv,jstDate,readKaitorixCsvProgress,writeKaitorixCsvProgress} from "./application/kaitorix-csv-download";
 
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8"}});
 const isAuthorized=(r:Request,token?:string)=>Boolean(token)&&r.headers.get("authorization")===`Bearer ${token}`;
@@ -94,10 +94,20 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
   if(!isAuthorized(request,env.ADMIN_TOKEN))return json({error:"unauthorized"},401);
   const raw=await request.json<unknown>().catch(()=>null);
   if(!raw||typeof raw!=="object")return json({error:"invalid payload"},400);
-  const body=raw as {date?:unknown;candidates?:unknown;replace?:unknown};
+  const body=raw as {date?:unknown;candidates?:unknown;replace?:unknown;rowsRead?:unknown;totalCandidates?:unknown;complete?:unknown;bytes?:unknown;objectKey?:unknown};
   if(typeof body.date!=="string"||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(body.date)||!Array.isArray(body.candidates)||body.candidates.length>500||(body.candidates.length===0&&body.replace!==true))return json({error:"date and 1-500 candidates are required (empty only with replace=true)"},400);
   try{
    const result=await importKaitorixCsvCandidates(env.DB,body.date,body.candidates as any[],body.replace===true);
+   try{
+    const previous=await readKaitorixCsvProgress(env,body.date);
+    const batchSize=result.accepted;
+    const importedCandidates=body.replace===true?batchSize:(previous?.importedCandidates??0)+batchSize;
+    const rowsRead=Number.isSafeInteger(body.rowsRead)?Number(body.rowsRead):previous?.rowsRead;
+    const totalCandidates=Number.isSafeInteger(body.totalCandidates)?Number(body.totalCandidates):previous?.totalCandidates;
+    const bytes=Number.isSafeInteger(body.bytes)?Number(body.bytes):previous?.bytes;
+    const objectKey=typeof body.objectKey==="string"?body.objectKey:previous?.objectKey??`kaitorix/csv/${body.date}.csv.gz`;
+    await writeKaitorixCsvProgress(env,{status:body.complete===true?"completed":"importing",date:body.date,objectKey,bytes,rowsRead,totalCandidates,importedCandidates,updatedAt:new Date().toISOString()});
+   }catch(error){console.warn("KaitoriX CSV progress update unavailable",error);}
    return json({source:"kaitorix-csv",status:"succeeded",...result},202);
   }catch(error){return json({error:error instanceof Error?error.message:"CSV candidate import failed"},422);}
  }
@@ -127,10 +137,12 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
   return json({lastRun:rows[0]??null,runs:rows,sources});
  }
  if(request.method==="GET"&&path==="/api/kaitorix/csv/status"){
-  const today=jstDate(new Date()),objectKey=`kaitorix/csv/${today}.csv.gz`,archived=Boolean(await env.MODELS.head(objectKey));
+ const today=jstDate(new Date()),objectKey=`kaitorix/csv/${today}.csv.gz`,archived=Boolean(await env.MODELS.head(objectKey));
+  let progress:null|Awaited<ReturnType<typeof readKaitorixCsvProgress>>=null;
+  try{progress=await readKaitorixCsvProgress(env,today);}catch(error){console.warn("KaitoriX CSV progress unavailable",error);}
   let latest:null|Record<string,unknown>=null;
   try{latest=await env.DB.prepare("SELECT run_id runId,source,status,item_count itemCount,message,started_at startedAt,finished_at finishedAt FROM collector_runs WHERE source='kaitorix-csv' ORDER BY id DESC LIMIT 1").first<Record<string,unknown>>()??null;}catch(error){console.warn("KaitoriX CSV status metadata unavailable",error);}
-  return json({configured:Boolean(env.KAITORIX_API_KEY),today,objectKey,archivedToday:archived,latest});
+  return json({configured:Boolean(env.KAITORIX_API_KEY),today,objectKey,archivedToday:archived,latest,progress});
  }
  return json({error:"not found"},404);
 }
