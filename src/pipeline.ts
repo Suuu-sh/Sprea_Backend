@@ -4,6 +4,7 @@ import {calculatePriceVariation,calculateSpreaScore,stockStatusFromQuantity} fro
 import {D1RetailListingRepository} from "./infrastructure/d1-retail-listing-repository";
 import {aggregateBuybackQuotes} from "./application/buyback-quote-aggregator";
 const HORIZONS=[24,48,72,168] as const,EVALUATION_LIMIT=100;
+const jstDate=(at:Date)=>new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Tokyo"}).format(at);
 export type DecisionReason="profit_below_threshold"|"confidence_below_threshold"|"insufficient_buyback_providers"|"insufficient_funds"|"duplicate_holding"|"stale_listing"|"stale_buyback"|"out_of_stock"|"buyback_closed"|"unresolved_product"|"other";
 export function paperTradeSkipReason(message:string):DecisionReason|null{return /open position/i.test(message)?"duplicate_holding":/insufficient paper cash/i.test(message)?"insufficient_funds":null;}
 const norm=(v:string|undefined)=>v?.normalize("NFKC").trim().toUpperCase().replace(/[\s_-]+/g,"")||"";
@@ -78,7 +79,7 @@ export async function evaluateDue(db:D1Database,at=new Date()):Promise<number>{
 /** Projects eligible imported quotes into the existing listing engine without changing legacy collectors. */
 export async function createBuybackQuoteOpportunities(db:D1Database,productIds:string[],at=new Date()):Promise<{created:number;buys:number}>{
  const ids=[...new Set(productIds.map(Number).filter(Number.isSafeInteger))];
- for(const productId of ids){const rows=(await db.prepare("SELECT q.* FROM buyback_quotes q WHERE q.product_id=? OR q.jan=(SELECT gtin FROM canonical_products WHERE id=? AND gtin IS NOT NULL AND gtin<>'') ORDER BY q.fetched_at DESC").bind(productId,productId).all<any>()).results;
+ for(const productId of ids){const rows=(await db.prepare("SELECT q.* FROM buyback_quotes q WHERE (q.product_id=? OR q.jan=(SELECT gtin FROM canonical_products WHERE id=? AND gtin IS NOT NULL AND gtin<>'')) AND (q.source_type<>'csv' OR json_extract(q.attributes_json,'$.snapshotDate')=?) ORDER BY q.fetched_at DESC").bind(productId,productId,jstDate(at)).all<any>()).results;
   const quotes:BuybackQuote[]=rows.map(row=>({id:String(row.id),productId:String(row.product_id),provider:String(row.provider),sourceType:row.source_type,externalId:row.external_id??undefined,productName:String(row.product_name),jan:row.jan??undefined,modelNumber:row.model_number??undefined,brand:row.brand??undefined,category:row.category??undefined,condition:row.condition,attributes:JSON.parse(String(row.attributes_json||"{}")),price:Number(row.price),shippingFee:Number(row.shipping_fee),fee:Number(row.fee),buybackStatus:row.buyback_status,productUrl:row.product_url??undefined,fetchedAt:String(row.fetched_at),lastSeenAt:String(row.last_seen_at),matchConfidence:Number(row.match_confidence),matchReason:String(row.match_reason)}));
   const aggregate=aggregateBuybackQuotes(quotes,at);
   await db.prepare("UPDATE latest_prices SET stock=0 WHERE listing_id IN (SELECT id FROM research_listings WHERE canonical_product_id=? AND source LIKE 'buyback-quote:%')").bind(productId).run();
