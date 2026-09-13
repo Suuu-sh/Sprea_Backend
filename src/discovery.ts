@@ -44,6 +44,55 @@ export function rakutenIdentityMatches(candidate:Pick<Candidate,"jan"|"model_num
 
 async function promote(db:D1Database,row:QuoteRow,identity:string,at:string):Promise<number|null>{const jan=validJan(row.jan);if(!jan&&!normalizeModelNumber(row.model_number))return null;const aliasType=jan?"gtin":"mpn",aliasValue=jan??`${normalizeModelNumber(row.model_number)}:`;const existing=await db.prepare("SELECT canonical_product_id FROM canonical_product_aliases WHERE alias_type=? AND alias_value=? AND condition=?").bind(aliasType,aliasValue,row.condition).first<{canonical_product_id:number}>();if(existing)return existing.canonical_product_id;const key=jan?`gtin:${jan}:${row.condition}`:`mpn:${aliasValue}:${row.condition}`;await db.prepare(`INSERT INTO canonical_products(canonical_key,gtin,manufacturer_part_number,brand,model,variant,category,capacity,color,condition,title,created_at,updated_at) VALUES(?,?,?,?,?,'',?,'','',?,?,?,?) ON CONFLICT(canonical_key) DO NOTHING`).bind(key,jan,row.model_number,row.brand??"",row.product_name,row.category??"",row.condition,row.product_name,at,at).run();const product=await db.prepare("SELECT id FROM canonical_products WHERE canonical_key=?").bind(key).first<{id:number}>();if(!product)return null;await db.prepare("INSERT OR IGNORE INTO canonical_product_aliases(alias_type,alias_value,condition,canonical_product_id,created_at) VALUES(?,?,?,?,?)").bind(aliasType,aliasValue,row.condition,product.id,at).run();return product.id;}
 
+type DiscoveryQueueMeta={dirty:number;reset_requested:number;provider_signature:string;generation:number;quote_count:number;candidate_count:number;canonical_count:number;rebuilt_at:string|null};
+const queueProviderSignature=(providers:string[])=>[...new Set(providers)].sort().join(",");
+
+/**
+ * Mark the materialized provider queue for a single rebuild.  The next
+ * scheduled invocation performs the expensive candidate pass once and then
+ * clears this flag.  Keeping the flag in D1 avoids MAX/COUNT scans on every
+ * five-minute invocation.
+ */
+export async function markDiscoveryQueueDirty(db:D1Database,reset=true,at=new Date()):Promise<void>{
+ try{
+  await db.prepare(`INSERT INTO product_discovery_queue_meta(id,dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at,updated_at) VALUES(1,1,?, '',0,0,0,0,NULL,?) ON CONFLICT(id) DO UPDATE SET dirty=1,reset_requested=MAX(reset_requested,excluded.reset_requested),updated_at=excluded.updated_at`).bind(reset?1:0,at.toISOString()).run();
+ }catch(error){
+  // Keep quote ingestion compatible with a database while the queue migration
+  // is being applied.  The scheduled worker will use the materialized queue
+  // once the migration is present.
+  if(error instanceof Error&&error.message.includes("no such table: product_discovery_queue_meta"))return;
+  throw error;
+ }
+}
+
+async function readDiscoveryQueueMeta(db:D1Database):Promise<DiscoveryQueueMeta|null>{
+ return await db.prepare("SELECT dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at FROM product_discovery_queue_meta WHERE id=1").first<DiscoveryQueueMeta>();
+}
+
+/**
+ * Materialize one provider-state row per candidate/provider only when the
+ * daily snapshot changes.  Scheduled runs then read the due index directly
+ * instead of cross joining every candidate with every provider.
+ */
+async function rebuildDiscoveryQueue(db:D1Database,providers:string[],meta:DiscoveryQueueMeta|null,counts:{quotes:number; candidates:number; canonical:number},at:Date):Promise<DiscoveryQueueMeta>{
+ const now=at.toISOString(),signature=queueProviderSignature(providers),reset=Boolean(meta?.reset_requested??1);
+ for(const provider of providers){
+  const statement=reset
+   ? `INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen)
+      SELECT id,?,'pending',0,0,NULL,?,'',?,best_buyback_price_yen FROM product_discovery_candidates
+      WHERE resolver_status IN ('searchable','retail_found')
+      ON CONFLICT(candidate_id,provider) DO UPDATE SET status='pending',next_search_at=excluded.next_search_at,last_error='',updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen`
+   : `INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen)
+      SELECT id,?,'pending',0,0,NULL,?,'',?,best_buyback_price_yen FROM product_discovery_candidates
+      WHERE resolver_status IN ('searchable','retail_found')
+      ON CONFLICT(candidate_id,provider) DO NOTHING`;
+  await db.prepare(statement).bind(provider,now,now).run();
+ }
+ const generation=Number(meta?.generation??0)+1;
+ await db.prepare(`UPDATE product_discovery_queue_meta SET dirty=0,reset_requested=0,provider_signature=?,generation=?,quote_count=?,candidate_count=?,canonical_count=?,rebuilt_at=?,updated_at=? WHERE id=1`).bind(signature,generation,counts.quotes,counts.candidates,counts.canonical,now,now).run();
+ return{dirty:0,reset_requested:0,provider_signature:signature,generation,quote_count:counts.quotes,candidate_count:counts.candidates,canonical_count:counts.canonical,rebuilt_at:now};
+}
+
 export async function buildDiscoveryCandidates(db:D1Database,at=new Date()):Promise<{quotes:number;candidates:number;canonical:number}>{
  const rows=(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes) SELECT provider,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused') AND price>0 AND (source_type<>'csv' OR json_extract(attributes_json,'$.snapshotDate')=?)`).bind(jstDate(at)).all<QuoteRow>()).results;
  const groups=new Map<string,QuoteRow[]>();for(const row of rows){const key=candidateIdentity(row),items=groups.get(key)??[];items.push(row);groups.set(key,items);}
@@ -81,26 +130,28 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
  const active=await env.DB.prepare("SELECT id FROM product_discovery_runs WHERE status='running' AND started_at>=? ORDER BY id DESC LIMIT 1").bind(new Date(at.getTime()-10*60_000).toISOString()).first<{id:number}>();
  if(active)return{status:"busy",runId:Number(active.id),searched:0,retailFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0};
  await env.DB.prepare("UPDATE product_discovery_runs SET status='failed',message='interrupted before completion',finished_at=? WHERE status='running' AND started_at<?").bind(at.toISOString(),new Date(at.getTime()-10*60_000).toISOString()).run();
-
- const freshness=await env.DB.prepare("SELECT (SELECT MAX(fetched_at) FROM buyback_quotes) newest_quote,(SELECT MAX(last_seen_at) FROM product_discovery_candidates) newest_candidate,(SELECT COUNT(*) FROM product_discovery_candidates) candidates").first<{newest_quote:string|null;newest_candidate:string|null;candidates:number}>();
- const needsRebuild=!freshness?.candidates||Boolean(freshness.newest_quote&&(!freshness.newest_candidate||freshness.newest_quote>freshness.newest_candidate));
- const built=needsRebuild?await buildDiscoveryCandidates(env.DB,at):{quotes:0,candidates:Number(freshness?.candidates??0),canonical:Number(freshness?.candidates??0)};
+ const names=[...providers.keys()],signature=queueProviderSignature(names),queueMeta=await readDiscoveryQueueMeta(env.DB);
+ let built={quotes:Number(queueMeta?.quote_count??0),candidates:Number(queueMeta?.candidate_count??0),canonical:Number(queueMeta?.canonical_count??0)};
+ const queueNeedsRebuild=!queueMeta||Boolean(queueMeta.dirty)||queueMeta.provider_signature!==signature;
+ if(queueNeedsRebuild){
+  // A dirty flag is set by the completed daily CSV import (or an explicit
+  // buyback ingest).  Only that transition rebuilds candidates from quotes.
+  if(!queueMeta||queueMeta.dirty)built=await buildDiscoveryCandidates(env.DB,at);
+  await rebuildDiscoveryQueue(env.DB,names,queueMeta,built,at);
+ }
  const settings=await env.DB.prepare("SELECT minimum_profit_yen,sale_shipping_yen,fees_yen FROM research_settings WHERE id=1").first<{minimum_profit_yen:number;sale_shipping_yen:number;fees_yen:number}>();
  const minimumProfit=Math.max(0,Number(settings?.minimum_profit_yen??5000)),saleCosts=Math.max(0,Number(settings?.sale_shipping_yen??0)+Number(settings?.fees_yen??0));
- // The provider state table is the durable exploration queue. Write state only
- // after a pair completes instead of creating 25k x N rows up front. `limit`
- // is a per-provider budget, so two providers can make progress independently
- // without one marketplace consuming the other's API allowance.
- const names=[...providers.keys()],providerSelect=names.map((_,index)=>index===0?"SELECT ? AS provider":"UNION ALL SELECT ? AS provider").join(" ");
- const pairs=(await env.DB.prepare(`SELECT c.*,p.provider,s.status provider_status,s.last_searched_at
-  FROM product_discovery_candidates c
-  JOIN (${providerSelect}) p ON 1=1
-  LEFT JOIN product_discovery_provider_state s ON s.candidate_id=c.id AND s.provider=p.provider
-  WHERE c.resolver_status IN ('searchable','retail_found')
-    AND (s.next_search_at IS NULL OR s.next_search_at<=?)
-  ORDER BY CASE WHEN s.candidate_id IS NULL THEN 0 ELSE 1 END,
-    CASE WHEN s.last_searched_at IS NULL THEN 0 ELSE 1 END,
-    c.buyback_provider_count DESC,c.best_buyback_price_yen DESC,s.last_searched_at
+ // The provider-state table is the durable exploration queue.  It is
+ // materialized once per snapshot, so this query uses the due index and reads
+ // only rows whose next attempt is ready; it no longer cross joins all
+ // candidates with every provider on every five-minute tick.
+ const providerPlaceholders=names.map(()=>"?").join(","),pairs=(await env.DB.prepare(`SELECT c.*,s.provider,s.status provider_status,s.last_searched_at
+  FROM product_discovery_provider_state s
+  JOIN product_discovery_candidates c ON c.id=s.candidate_id
+ WHERE s.provider IN (${providerPlaceholders})
+    AND c.resolver_status IN ('searchable','retail_found')
+    AND s.next_search_at<=?
+  ORDER BY s.next_search_at,s.queue_priority_yen DESC,s.candidate_id
   LIMIT ?`).bind(...names,at.toISOString(),Math.max(1,Math.min(100,limit))*names.length).all<Candidate&{provider:string}>()).results;
  if(!pairs.length)return{status:"idle",runId:0,...built,searched:0,retailFound:0,yahooFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0,providers:{}};
  const insert=await env.DB.prepare("INSERT INTO product_discovery_runs(trigger,status,quote_count,candidate_count,canonical_count,started_at) VALUES(?,'running',?,?,?,?)").bind(trigger,built.quotes,built.candidates,built.canonical,at.toISOString()).run(),runId=Number(insert.meta.last_row_id);
@@ -126,8 +177,8 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
    for(const listing of confirmed){const profit=pair.best_buyback_price_yen-listing.priceYen+(listing.rewardYen??0)-saleCosts;if(profit>0){profitable++;stats.profitable++;}if(profit>=minimumProfit){threshold++;stats.threshold++;}await env.DB.prepare("INSERT OR IGNORE INTO product_discovery_results(run_id,candidate_id,source,external_id,title,price_yen,product_url,within_discovery_ceiling,captured_at) VALUES(?,?,?,?,?,?,?,?,?)").bind(runId,pair.id,listing.source,listing.externalId,listing.title,listing.priceYen,listing.url,listing.priceYen<=pair.discovery_ceiling_yen?1:0,at.toISOString()).run();}
    if(confirmed.length){const summary=await ingestListings(env.DB,confirmed,at);buys+=summary.buys;await env.DB.prepare("UPDATE product_discovery_candidates SET resolver_status='retail_found',updated_at=? WHERE id=?").bind(at.toISOString(),pair.id).run();}
    const nextSearchMinutes=confirmed.length?24*60:6*60;
-   await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at) VALUES(?,?, 'succeeded',1,0,?,?,?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error='',updated_at=excluded.updated_at").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+nextSearchMinutes*60_000).toISOString(),"",at.toISOString()).run();
-  }catch(error){failures++;stats.failures++;const message=error instanceof Error?error.message.slice(0,500):"search failed";await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at) VALUES(?,?, 'failed',1,1,?,?,?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,failure_count=product_discovery_provider_state.failure_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error=excluded.last_error,updated_at=excluded.updated_at").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+60*60_000).toISOString(),message,at.toISOString()).run();}
+   await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen) VALUES(?,?, 'succeeded',1,0,?,?,?, ?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error='',updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+nextSearchMinutes*60_000).toISOString(),"",at.toISOString(),pair.best_buyback_price_yen).run();
+  }catch(error){failures++;stats.failures++;const message=error instanceof Error?error.message.slice(0,500):"search failed";await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen) VALUES(?,?, 'failed',1,1,?,?,?, ?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,failure_count=product_discovery_provider_state.failure_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error=excluded.last_error,updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+60*60_000).toISOString(),message,at.toISOString(),pair.best_buyback_price_yen).run();}
  }
  for(const[name,stats]of Object.entries(providerStats))await env.DB.prepare("INSERT INTO product_discovery_provider_runs(run_id,provider,searched_count,found_count,listing_count,profitable_count,threshold_count,failure_count) VALUES(?,?,?,?,?,?,?,?)").bind(runId,name,stats.searched,stats.found,stats.listings,stats.profitable,stats.threshold,stats.failures).run();
  const status=failures===pairs.length&&pairs.length?"failed":"succeeded";
