@@ -9,7 +9,11 @@ type Hit={code?:unknown;name?:unknown;price?:unknown;inStock?:unknown;condition?
 type RakutenItem={itemCode?:unknown;itemName?:unknown;itemCaption?:unknown;catchcopy?:unknown;itemPrice?:unknown;itemUrl?:unknown;availability?:unknown;postageFlag?:unknown;pointRate?:unknown;pointRateEndTime?:unknown};
 type RakutenWrappedItem=RakutenItem|{item?:RakutenItem}|{Item?:RakutenItem};
 export type DiscoveryEnv={DB:D1Database;YAHOO_CLIENT_ID?:string;RAKUTEN_APPLICATION_ID?:string;RAKUTEN_ACCESS_KEY?:string;AMAZON_CREATORS_CLIENT_ID?:string;AMAZON_CREATORS_CLIENT_SECRET?:string;AMAZON_PARTNER_TAG?:string};
-const DISCOVERY_REQUEST_TIMEOUT_MS=15_000;
+// Keep one scheduled invocation bounded even when a marketplace API is slow or
+// repeatedly returns transient errors. Unprocessed queue rows remain pending
+// and are picked up by the next five-minute tick.
+const DISCOVERY_REQUEST_TIMEOUT_MS=8_000;
+const MAX_DISCOVERY_RUNTIME_MS=4*60_000;
 async function fetchWithTimeout(input:RequestInfo|URL,init:RequestInit={},fetcher:typeof fetch=fetch):Promise<Response>{const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),DISCOVERY_REQUEST_TIMEOUT_MS);try{return await fetcher(input,{...init,signal:controller.signal});}finally{clearTimeout(timer);}}
 const validJan=(value:string|null)=>value&&/^\d{8,14}$/.test(value)?value:null;
 const jstDate=(at:Date)=>new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Tokyo"}).format(at);
@@ -154,7 +158,7 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
   ORDER BY s.next_search_at,s.queue_priority_yen DESC,s.candidate_id
   LIMIT ?`).bind(...names,at.toISOString(),Math.max(1,Math.min(100,limit))*names.length).all<Candidate&{provider:string}>()).results;
  if(!pairs.length)return{status:"idle",runId:0,...built,searched:0,retailFound:0,yahooFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0,providers:{}};
- const insert=await env.DB.prepare("INSERT INTO product_discovery_runs(trigger,status,quote_count,candidate_count,canonical_count,started_at) VALUES(?,'running',?,?,?,?)").bind(trigger,built.quotes,built.candidates,built.canonical,at.toISOString()).run(),runId=Number(insert.meta.last_row_id);
+ const insert=await env.DB.prepare("INSERT INTO product_discovery_runs(trigger,status,quote_count,candidate_count,canonical_count,started_at) VALUES(?,'running',?,?,?,?)").bind(trigger,built.quotes,built.candidates,built.canonical,at.toISOString()).run(),runId=Number(insert.meta.last_row_id),deadline=Date.now()+MAX_DISCOVERY_RUNTIME_MS;
  let purchasable=0,profitable=0,threshold=0,buys=0,failures=0;
  const foundCandidates=new Set<number>(),searchedCandidates=new Set<number>(),providerStats:Record<string,{searched:number;found:number;listings:number;profitable:number;threshold:number;failures:number}>={},lastRequest=new Map<string,number>();
  for(const name of names)providerStats[name]={searched:0,found:0,listings:0,profitable:0,threshold:0,failures:0};
@@ -165,6 +169,7 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
    lastRequest.set(provider,Date.now());
  };
  for(const pair of pairs){
+  if(Date.now()>=deadline)break;
   searchedCandidates.add(pair.id);const stats=providerStats[pair.provider],search=providers.get(pair.provider)!;stats.searched++;
   try{
    await waitForProvider(pair.provider);
@@ -181,9 +186,9 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
   }catch(error){failures++;stats.failures++;const message=error instanceof Error?error.message.slice(0,500):"search failed";await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen) VALUES(?,?, 'failed',1,1,?,?,?, ?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,failure_count=product_discovery_provider_state.failure_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error=excluded.last_error,updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+60*60_000).toISOString(),message,at.toISOString(),pair.best_buyback_price_yen).run();}
  }
  for(const[name,stats]of Object.entries(providerStats))await env.DB.prepare("INSERT INTO product_discovery_provider_runs(run_id,provider,searched_count,found_count,listing_count,profitable_count,threshold_count,failure_count) VALUES(?,?,?,?,?,?,?,?)").bind(runId,name,stats.searched,stats.found,stats.listings,stats.profitable,stats.threshold,stats.failures).run();
- const status=failures===pairs.length&&pairs.length?"failed":"succeeded";
- await env.DB.prepare("UPDATE product_discovery_runs SET status=?,searched_count=?,yahoo_found_count=?,purchasable_count=?,profitable_count=?,threshold_count=?,buy_count=?,failure_count=?,message=?,finished_at=? WHERE id=?").bind(status,searchedCandidates.size,foundCandidates.size,purchasable,profitable,threshold,buys,failures,`searched ${pairs.length} candidate/provider pairs; confirmed ${foundCandidates.size}`,new Date().toISOString(),runId).run();
- return{runId,...built,searched:searchedCandidates.size,retailFound:foundCandidates.size,yahooFound:foundCandidates.size,purchasable,profitable,threshold,buys,failures,providers:providerStats};
+ const status=failures===searchedCandidates.size&&searchedCandidates.size?"failed":"succeeded",deferred=Math.max(0,pairs.length-searchedCandidates.size),message=`searched ${searchedCandidates.size}/${pairs.length} candidate/provider pairs; confirmed ${foundCandidates.size}${deferred?`; deferred ${deferred} for the next tick`:""}`;
+ await env.DB.prepare("UPDATE product_discovery_runs SET status=?,searched_count=?,yahoo_found_count=?,purchasable_count=?,profitable_count=?,threshold_count=?,buy_count=?,failure_count=?,message=?,finished_at=? WHERE id=?").bind(status,searchedCandidates.size,foundCandidates.size,purchasable,profitable,threshold,buys,failures,message,new Date().toISOString(),runId).run();
+ return{runId,...built,searched:searchedCandidates.size,retailFound:foundCandidates.size,yahooFound:foundCandidates.size,purchasable,profitable,threshold,buys,failures,deferred,providers:providerStats};
 }
 
 export async function discoveryFunnel(db:D1Database){
