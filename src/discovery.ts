@@ -214,3 +214,30 @@ export async function discoveryFunnel(db:D1Database){
  const providers=latestRuns.map(row=>({provider:String(row.provider),found:Number(row.found_count??0),listings:Number(row.listing_count??0),profitable:Number(row.profitable_count??0),threshold:Number(row.threshold_count??0),averageProfitGap:0}));
  return{minimumProfit,buybackQuotes:Number(run?.quote_count??0),candidates:Number(run?.candidate_count??0),canonicalProducts:Number(run?.canonical_count??0),yahooFound:Number(run?.yahoo_found_count??0),purchasable:Number(run?.purchasable_count??0),profitable:Number(run?.profitable_count??0),threshold:Number(run?.threshold_count??0),buys:Number(run?.buy_count??0),providers,lastProviderRuns:latestRuns,lastRun:run??null};
 }
+
+/**
+ * Return only queue metadata and the latest bounded run.  This endpoint is
+ * intentionally not a COUNT/GROUP BY over provider_state: the UI can inspect
+ * progress without rescanning the full discovery queue in D1.
+ */
+export async function discoveryQueueStatus(db:D1Database){
+ const meta=await readDiscoveryQueueMeta(db);
+ const run=await db.prepare("SELECT id,trigger,status,quote_count,candidate_count,canonical_count,searched_count,purchasable_count,profitable_count,threshold_count,buy_count,failure_count,message,started_at,finished_at FROM product_discovery_runs ORDER BY id DESC LIMIT 1").first<any>();
+ const providers=run?(await db.prepare("SELECT provider,searched_count,found_count,listing_count,profitable_count,threshold_count,failure_count FROM product_discovery_provider_runs WHERE run_id=? ORDER BY provider").bind(run.id).all<any>()).results:[];
+ const signature=String(meta?.provider_signature??"");
+ const providerCount=providers.length||signature.split(",").map(value=>value.trim()).filter(Boolean).length;
+ const state=run?.status==="running"?"running":meta?.dirty?"rebuild_pending":run?.status==="failed"?"failed":"idle";
+ return{
+  state,
+  generation:Number(meta?.generation??0),
+  dirty:Boolean(meta?.dirty),
+  candidates:Number(meta?.candidate_count??run?.candidate_count??0),
+  quotes:Number(meta?.quote_count??run?.quote_count??0),
+  canonicalProducts:Number(meta?.canonical_count??run?.canonical_count??0),
+  providerCount,
+  totalPairs:Number(meta?.candidate_count??run?.candidate_count??0)*providerCount,
+  rebuiltAt:meta?.rebuilt_at??null,
+  lastRun:run?{id:Number(run.id),trigger:String(run.trigger),status:String(run.status),searched:Number(run.searched_count??0),purchasable:Number(run.purchasable_count??0),profitable:Number(run.profitable_count??0),threshold:Number(run.threshold_count??0),buys:Number(run.buy_count??0),failures:Number(run.failure_count??0),message:String(run.message??""),startedAt:String(run.started_at),finishedAt:run.finished_at?String(run.finished_at):null}:null,
+  providers:providers.map(row=>({provider:String(row.provider),searched:Number(row.searched_count??0),found:Number(row.found_count??0),listings:Number(row.listing_count??0),profitable:Number(row.profitable_count??0),threshold:Number(row.threshold_count??0),failures:Number(row.failure_count??0)})),
+ };
+}
