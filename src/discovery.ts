@@ -232,6 +232,7 @@ export async function discoveryQueueStatus(db:D1Database){
  const meta=await readDiscoveryQueueMeta(db);
  const run=await db.prepare("SELECT id,trigger,status,quote_count,candidate_count,canonical_count,searched_count,purchasable_count,profitable_count,threshold_count,buy_count,failure_count,message,started_at,finished_at FROM product_discovery_runs ORDER BY id DESC LIMIT 1").first<any>();
  const providers=run?(await db.prepare("SELECT provider,searched_count,found_count,listing_count,profitable_count,threshold_count,failure_count FROM product_discovery_provider_runs WHERE run_id=? ORDER BY provider").bind(run.id).all<any>()).results:[];
+ const errorSection=String(run?.message??"").match(/; errors (.+)$/)?.[1]??"",providerErrors=new Map(errorSection.split(" | ").map(value=>{const separator=value.indexOf(": ");return separator>0?[value.slice(0,separator),value.slice(separator+2)]:["",""]}).filter(([provider])=>Boolean(provider)) as Array<[string,string]>);
  const signature=String(meta?.provider_signature??"");
  const providerCount=providers.length||signature.split(",").map(value=>value.trim()).filter(Boolean).length;
  const searchedCandidates=Number(run?.searched_count??0);
@@ -251,6 +252,6 @@ export async function discoveryQueueStatus(db:D1Database){
   totalPairs:Number(meta?.candidate_count??run?.candidate_count??0)*providerCount,
   rebuiltAt:meta?.rebuilt_at??null,
       lastRun:run?{id:Number(run.id),trigger:String(run.trigger),status:String(run.status),searched:searchedCandidates,searchedPairs,batchPairs,deferredPairs,purchasable:Number(run.purchasable_count??0),profitable:Number(run.profitable_count??0),threshold:Number(run.threshold_count??0),buys:Number(run.buy_count??0),failures:Number(run.failure_count??0),message:String(run.message??""),startedAt:String(run.started_at),finishedAt:run.finished_at?String(run.finished_at):null}:null,
-  providers:providers.map(row=>({provider:String(row.provider),searched:Number(row.searched_count??0),found:Number(row.found_count??0),listings:Number(row.listing_count??0),profitable:Number(row.profitable_count??0),threshold:Number(row.threshold_count??0),failures:Number(row.failure_count??0)})),
+  providers:providers.map(row=>({provider:String(row.provider),searched:Number(row.searched_count??0),found:Number(row.found_count??0),listings:Number(row.listing_count??0),profitable:Number(row.profitable_count??0),threshold:Number(row.threshold_count??0),failures:Number(row.failure_count??0),lastError:providerErrors.get(String(row.provider))??""})),
  };
 }
