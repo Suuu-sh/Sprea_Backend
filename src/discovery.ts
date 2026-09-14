@@ -226,6 +226,8 @@ export async function discoveryQueueStatus(db:D1Database){
  const providers=run?(await db.prepare("SELECT provider,searched_count,found_count,listing_count,profitable_count,threshold_count,failure_count FROM product_discovery_provider_runs WHERE run_id=? ORDER BY provider").bind(run.id).all<any>()).results:[];
  const signature=String(meta?.provider_signature??"");
  const providerCount=providers.length||signature.split(",").map(value=>value.trim()).filter(Boolean).length;
+ const searchedCandidates=Number(run?.searched_count??0);
+ const searchedPairs=providers.reduce((total,row)=>total+Number(row.searched_count??0),0);
  const state=run?.status==="running"?"running":meta?.dirty?"rebuild_pending":run?.status==="failed"?"failed":"idle";
  return{
   state,
@@ -237,7 +239,7 @@ export async function discoveryQueueStatus(db:D1Database){
   providerCount,
   totalPairs:Number(meta?.candidate_count??run?.candidate_count??0)*providerCount,
   rebuiltAt:meta?.rebuilt_at??null,
-  lastRun:run?{id:Number(run.id),trigger:String(run.trigger),status:String(run.status),searched:Number(run.searched_count??0),purchasable:Number(run.purchasable_count??0),profitable:Number(run.profitable_count??0),threshold:Number(run.threshold_count??0),buys:Number(run.buy_count??0),failures:Number(run.failure_count??0),message:String(run.message??""),startedAt:String(run.started_at),finishedAt:run.finished_at?String(run.finished_at):null}:null,
+      lastRun:run?{id:Number(run.id),trigger:String(run.trigger),status:String(run.status),searched:searchedCandidates,searchedPairs,purchasable:Number(run.purchasable_count??0),profitable:Number(run.profitable_count??0),threshold:Number(run.threshold_count??0),buys:Number(run.buy_count??0),failures:Number(run.failure_count??0),message:String(run.message??""),startedAt:String(run.started_at),finishedAt:run.finished_at?String(run.finished_at):null}:null,
   providers:providers.map(row=>({provider:String(row.provider),searched:Number(row.searched_count??0),found:Number(row.found_count??0),listings:Number(row.listing_count??0),profitable:Number(row.profitable_count??0),threshold:Number(row.threshold_count??0),failures:Number(row.failure_count??0)})),
  };
 }
