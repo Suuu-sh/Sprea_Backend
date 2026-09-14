@@ -122,7 +122,14 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
   const response=json(await discoveryCandidates(env.DB,url,Boolean(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG)));response.headers.set("cache-control","public, max-age=120, stale-while-revalidate=300");ctx?.waitUntil(cache.put(cacheKey,response.clone()));return response;
  }
  if(request.method==="GET"&&path==="/api/research/analytics")return cachedJson(request,"sprea-analytics",300,async()=>json(await researchAnalytics(env.DB)),ctx);
- if(request.method==="POST"&&path==="/api/research/discovery/run"){ctx?.waitUntil(runProductDiscovery(env,"manual",30).catch(error=>console.error("manual discovery failed",error)));return json({status:"started"},202);}
+ if(request.method==="POST"&&path==="/api/research/discovery/run"){
+  // This endpoint is user initiated, so keep the request open until the
+  // bounded run has recorded its result.  HTTP requests have no hard wall-time
+  // limit while the client remains connected; returning immediately via
+  // waitUntil would leave the work with only a 30-second grace period and
+  // could strand a `running` row before the provider queue is updated.
+  return json(await runProductDiscovery(env,"manual",30));
+ }
  if(request.method==="GET"&&path==="/api/portfolio")return json(await env.DB.prepare("SELECT * FROM research_paper_accounts WHERE id=1").first());
  if(request.method==="GET"&&path==="/api/metrics"){const h=Number(url.searchParams.get("horizon")??48);if(![24,48,72,168].includes(h))return json({error:"invalid horizon"},400);const rows=(await env.DB.prepare("SELECT outcome,market_profit_yen FROM research_opportunity_evaluations WHERE horizon_hours=? AND evaluation_status='completed'").bind(h).all<any>()).results,tp=rows.filter(x=>x.outcome==="buy_correct").length,fp=rows.filter(x=>x.outcome==="buy_failed").length,fn=rows.filter(x=>x.outcome==="missed_opportunity").length,b=rows.filter(x=>String(x.outcome).startsWith("buy_"));return json({horizon_hours:h,precision:tp+fp?tp/(tp+fp):null,recall:tp+fn?tp/(tp+fn):null,average_profit_yen:b.length?b.reduce((s,x)=>s+x.market_profit_yen,0)/b.length:null,max_loss_yen:b.length?Math.min(...b.map(x=>x.market_profit_yen)):null,samples:rows.length});}
  const productMatch=path.match(/^\/api\/research\/products\/(.+)$/);if(request.method==="GET"&&productMatch){const result=await productDetail(env.DB,decodeURIComponent(productMatch[1]));return result?json(result):json({error:"not found"},404);}
