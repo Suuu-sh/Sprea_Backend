@@ -199,9 +199,10 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
   }catch(error){failures++;stats.failures++;const message=error instanceof Error?error.message.slice(0,500):"search failed";await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen) VALUES(?,?, 'failed',1,1,?,?,?, ?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,failure_count=product_discovery_provider_state.failure_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error=excluded.last_error,updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+60*60_000).toISOString(),message,at.toISOString(),pair.best_buyback_price_yen).run();}
  }
  for(const[name,stats]of Object.entries(providerStats))await env.DB.prepare("INSERT INTO product_discovery_provider_runs(run_id,provider,searched_count,found_count,listing_count,profitable_count,threshold_count,failure_count) VALUES(?,?,?,?,?,?,?,?)").bind(runId,name,stats.searched,stats.found,stats.listings,stats.profitable,stats.threshold,stats.failures).run();
- const status=failures===searchedCandidates.size&&searchedCandidates.size?"failed":"succeeded",deferred=Math.max(0,pairs.length-searchedCandidates.size),message=`searched ${searchedCandidates.size}/${pairs.length} candidate/provider pairs; confirmed ${foundCandidates.size}${deferred?`; deferred ${deferred} for the next tick`:""}`;
+ const searchedPairs=Object.values(providerStats).reduce((total,stats)=>total+stats.searched,0);
+ const status=failures===searchedPairs&&searchedPairs?"failed":"succeeded",deferred=Math.max(0,pairs.length-searchedPairs),message=`searched ${searchedPairs}/${pairs.length} candidate/provider pairs; candidates ${searchedCandidates.size}; confirmed ${foundCandidates.size}${deferred?`; deferred ${deferred} for the next tick`:""}`;
  await env.DB.prepare("UPDATE product_discovery_runs SET status=?,searched_count=?,yahoo_found_count=?,purchasable_count=?,profitable_count=?,threshold_count=?,buy_count=?,failure_count=?,message=?,finished_at=? WHERE id=?").bind(status,searchedCandidates.size,foundCandidates.size,purchasable,profitable,threshold,buys,failures,message,new Date().toISOString(),runId).run();
- return{runId,...built,searched:searchedCandidates.size,retailFound:foundCandidates.size,yahooFound:foundCandidates.size,purchasable,profitable,threshold,buys,failures,deferred,providers:providerStats};
+ return{runId,...built,searched:searchedCandidates.size,searchedPairs,retailFound:foundCandidates.size,yahooFound:foundCandidates.size,purchasable,profitable,threshold,buys,failures,deferred,providers:providerStats};
 }
 
 export async function discoveryFunnel(db:D1Database){
@@ -228,6 +229,9 @@ export async function discoveryQueueStatus(db:D1Database){
  const providerCount=providers.length||signature.split(",").map(value=>value.trim()).filter(Boolean).length;
  const searchedCandidates=Number(run?.searched_count??0);
  const searchedPairs=providers.reduce((total,row)=>total+Number(row.searched_count??0),0);
+ const batchPairsMatch=String(run?.message??"").match(/searched\s+\d+\/(\d+)\s+candidate\/provider pairs/);
+ const batchPairs=batchPairsMatch?Number(batchPairsMatch[1]):null;
+ const deferredPairs=batchPairs==null?null:Math.max(0,batchPairs-searchedPairs);
  const state=run?.status==="running"?"running":meta?.dirty?"rebuild_pending":run?.status==="failed"?"failed":"idle";
  return{
   state,
@@ -239,7 +243,7 @@ export async function discoveryQueueStatus(db:D1Database){
   providerCount,
   totalPairs:Number(meta?.candidate_count??run?.candidate_count??0)*providerCount,
   rebuiltAt:meta?.rebuilt_at??null,
-      lastRun:run?{id:Number(run.id),trigger:String(run.trigger),status:String(run.status),searched:searchedCandidates,searchedPairs,purchasable:Number(run.purchasable_count??0),profitable:Number(run.profitable_count??0),threshold:Number(run.threshold_count??0),buys:Number(run.buy_count??0),failures:Number(run.failure_count??0),message:String(run.message??""),startedAt:String(run.started_at),finishedAt:run.finished_at?String(run.finished_at):null}:null,
+      lastRun:run?{id:Number(run.id),trigger:String(run.trigger),status:String(run.status),searched:searchedCandidates,searchedPairs,batchPairs,deferredPairs,purchasable:Number(run.purchasable_count??0),profitable:Number(run.profitable_count??0),threshold:Number(run.threshold_count??0),buys:Number(run.buy_count??0),failures:Number(run.failure_count??0),message:String(run.message??""),startedAt:String(run.started_at),finishedAt:run.finished_at?String(run.finished_at):null}:null,
   providers:providers.map(row=>({provider:String(row.provider),searched:Number(row.searched_count??0),found:Number(row.found_count??0),listings:Number(row.listing_count??0),profitable:Number(row.profitable_count??0),threshold:Number(row.threshold_count??0),failures:Number(row.failure_count??0)})),
  };
 }
