@@ -4,7 +4,7 @@ const apiKey = process.env.KAITORIX_API_KEY?.trim();
 const adminToken = process.env.SPREA_ADMIN_TOKEN?.trim();
 const workerUrl = (process.env.SPREA_WORKER_URL ?? "https://sprea-research.suuu-sh.workers.dev").replace(/\/$/, "");
 const baseUrl = "https://kaitorix.app";
-const minProductPriceYen = Math.max(0, Number(process.env.KAITORIX_MIN_PRODUCT_PRICE_YEN ?? 10_000));
+const minProductPriceYen = Math.max(0, Number(process.env.KAITORIX_MIN_PRODUCT_PRICE_YEN ?? 5_000));
 const maxStoresPerProduct = Math.max(1, Math.min(5, Number(process.env.KAITORIX_MAX_STORES_PER_PRODUCT ?? 2)));
 const maxCandidates = Math.max(1, Number(process.env.KAITORIX_MAX_CANDIDATES ?? 10_000));
 
