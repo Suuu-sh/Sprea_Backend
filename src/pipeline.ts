@@ -3,7 +3,7 @@ import type {BuybackQuote} from "./domain";
 import {calculatePriceVariation,calculateSpreaScore,stockStatusFromQuantity} from "./domain";
 import {D1RetailListingRepository} from "./infrastructure/d1-retail-listing-repository";
 import {aggregateBuybackQuotes} from "./application/buyback-quote-aggregator";
-const HORIZONS=[24,48,72,168] as const,EVALUATION_LIMIT=100;
+const HORIZONS=[24,48,72,168] as const,EVALUATION_LIMIT=100,EVALUATION_RETRY_HOURS=6;
 const jstDate=(at:Date)=>new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Tokyo"}).format(at);
 export type DecisionReason="profit_below_threshold"|"confidence_below_threshold"|"insufficient_buyback_providers"|"insufficient_funds"|"duplicate_holding"|"stale_listing"|"stale_buyback"|"out_of_stock"|"buyback_closed"|"unresolved_product"|"other";
 export function paperTradeSkipReason(message:string):DecisionReason|null{return /open position/i.test(message)?"duplicate_holding":/insufficient paper cash/i.test(message)?"insufficient_funds":null;}
@@ -61,7 +61,7 @@ async function loadEvaluationObservations(db:D1Database,productIds:number[],sinc
 }
 
 export async function evaluateDue(db:D1Database,at=new Date()):Promise<number>{
- const due=(await db.prepare(`WITH horizons(hours) AS (VALUES(24),(48),(72),(168)) SELECT o.*,t.id trade_id,h.hours horizon_hours FROM research_opportunities o CROSS JOIN horizons h LEFT JOIN research_paper_trades t ON t.opportunity_id=o.id LEFT JOIN research_opportunity_evaluations e ON e.opportunity_id=o.id AND e.horizon_hours=h.hours WHERE (e.id IS NULL OR e.evaluation_status='pending_data') AND datetime(o.detected_at,'+'||h.hours||' hours')<=datetime(?) ORDER BY o.detected_at,h.hours LIMIT ?`).bind(at.toISOString(),EVALUATION_LIMIT).all<any>()).results;
+ const due=(await db.prepare(`WITH horizons(hours) AS (VALUES(24),(48),(72),(168)) SELECT o.*,t.id trade_id,h.hours horizon_hours FROM research_opportunities o CROSS JOIN horizons h LEFT JOIN research_paper_trades t ON t.opportunity_id=o.id LEFT JOIN research_opportunity_evaluations e ON e.opportunity_id=o.id AND e.horizon_hours=h.hours WHERE (e.id IS NULL OR (e.evaluation_status='pending_data' AND e.checked_at<datetime(?,'-${EVALUATION_RETRY_HOURS} hours'))) AND datetime(o.detected_at,'+'||h.hours||' hours')<=datetime(?) ORDER BY o.detected_at,h.hours LIMIT ?`).bind(at.toISOString(),at.toISOString(),EVALUATION_LIMIT).all<any>()).results;
  const targetsByProduct=new Map<number,number>();
  for(const row of due){const productId=Number(row.canonical_product_id),target=Date.parse(row.detected_at)+Number(row.horizon_hours)*3_600_000,current=targetsByProduct.get(productId);if(current===undefined||target<current)targetsByProduct.set(productId,target);}
  const observationsByProduct=await loadEvaluationObservations(db,[...targetsByProduct.keys()],new Date(Math.min(...targetsByProduct.values(),at.getTime())).toISOString(),at);

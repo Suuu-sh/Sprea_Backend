@@ -25,7 +25,9 @@ jobs:
       # 5,000円以上を入口にし、JAN・新品/未使用・アクセサリー除外は維持する。
       KAITORIX_MIN_PRODUCT_PRICE_YEN: 5000
       KAITORIX_MAX_STORES_PER_PRODUCT: 2
-      KAITORIX_MAX_CANDIDATES: 10000
+      # Keep the daily D1 projection below the free write budget. The CSV is
+      # retained in R2, so this is only the searchable candidate projection.
+      KAITORIX_MAX_CANDIDATES: 5000
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
