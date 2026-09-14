@@ -21,5 +21,6 @@ CREATE TABLE IF NOT EXISTS product_discovery_provider_runs (
   profitable_count INTEGER NOT NULL DEFAULT 0,
   threshold_count INTEGER NOT NULL DEFAULT 0,
   failure_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(run_id,provider)
 );
