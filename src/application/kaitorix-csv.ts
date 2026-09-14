@@ -26,7 +26,9 @@ export type KaitorixCsvCandidate = {
   jan: string;
   productName: string;
   category?: BuybackQuoteInput["category"];
-  condition: "new" | "unused";
+  // Some KaitoriX rows omit a condition marker. Keep them as explicitly
+  // unknown candidates; rows explicitly marked used/junk are still excluded.
+  condition: BuybackQuoteInput["condition"];
   msrp?: number;
   bestBuybackPrice: number;
   bestBuybackProvider: string;
@@ -129,7 +131,7 @@ const category = (value: string | undefined): BuybackQuoteInput["category"] => {
 const condition = (name: string): BuybackQuoteInput["condition"] => {
   if (/(未開封|新品)/.test(name)) return "new";
   if (/未使用/.test(name)) return "unused";
-  if (/(中古|使用済)/.test(name)) return "used";
+  if (/(中古|使用済|ジャンク|訳あり|欠品|箱なし)/.test(name)) return "used";
   return "unknown";
 };
 
@@ -138,7 +140,7 @@ const accessoryText = /(?:ケース|カバー|保護フィルム|ガラスフィ
 const validJan = (value: string | undefined): value is string => Boolean(value && /^\d{8,14}$/.test(value));
 
 /**
- * Filter a daily snapshot down to strict, high-value candidates.  This is
+ * Filter a daily snapshot down to high-value candidates.  This is
  * deliberately separate from `parseKaitorixCsv`: callers that need a full
  * quote expansion can keep using the original parser, while the production
  * sync can stay within D1's write budget.
@@ -170,7 +172,7 @@ export function parseKaitorixCsvCandidates(
       continue;
     }
     const productCondition = condition(productName);
-    if (productCondition !== "new" && productCondition !== "unused") {
+    if (productCondition === "used" || productCondition === "refurbished") {
       skippedRows += 1;
       continue;
     }

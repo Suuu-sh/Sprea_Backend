@@ -98,7 +98,7 @@ async function rebuildDiscoveryQueue(db:D1Database,providers:string[],meta:Disco
 }
 
 export async function buildDiscoveryCandidates(db:D1Database,at=new Date()):Promise<{quotes:number;candidates:number;canonical:number}>{
- const rows=(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes) SELECT provider,source_type,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused') AND price>0 AND (source_type<>'csv' OR json_extract(attributes_json,'$.snapshotDate')=?)`).bind(jstDate(at)).all<QuoteRow>()).results;
+ const rows=(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes) SELECT provider,source_type,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused','unknown') AND price>0 AND (source_type<>'csv' OR json_extract(attributes_json,'$.snapshotDate')=?)`).bind(jstDate(at)).all<QuoteRow>()).results;
  const currentCsvRows=rows.filter(row=>row.source_type==="csv"),activeRows=currentCsvRows.length?currentCsvRows:rows;
  // Once a complete CSV snapshot is available, it is the buyback source of
  // truth.  Drop pre-CSV/API rows in the same daily rebuild so they cannot keep

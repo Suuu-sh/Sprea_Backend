@@ -35,10 +35,11 @@ describe("KaitoriX CSV parser", () => {
 
   it("filters strict high-value candidates and keeps store summaries", () => {
     const result = parseKaitorixCsvCandidates(`${sample}\n4902370553048,Switch 2 ケース,ゲーム,12000,12000,,,2026-09-13 09:00,,`, {minProductPriceYen: 10000, maxStoresPerProduct: 2});
-    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates).toHaveLength(3);
     const candidate = result.candidates.find(item => item.jan === "4902370553031");
     expect(candidate).toMatchObject({bestBuybackPrice: 59000, bestBuybackProvider: "買取商店", storeCount: 3});
     expect(candidate?.stores).toHaveLength(2);
+    expect(result.candidates.find(item => item.jan === "4948872016490")).toMatchObject({condition: "unknown"});
     expect(result.candidates.some(item => item.productName.includes("ケース"))).toBe(false);
   });
 });

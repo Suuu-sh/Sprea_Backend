@@ -76,6 +76,7 @@ function category(value) {
 function condition(name) {
   if (/(未開封|新品)/u.test(name)) return "new";
   if (/未使用/u.test(name)) return "unused";
+  if (/(中古|使用済|ジャンク|訳あり|欠品|箱なし)/u.test(name)) return "used";
   return "unknown";
 }
 
@@ -92,7 +93,7 @@ function extractCandidates(csv) {
   for (const row of rows.slice(1)) {
     const jan = String(row[indexOf.get("jan")] ?? "").trim();
     const productName = String(row[indexOf.get("name")] ?? "").trim();
-    if (!/^\d{8,14}$/.test(jan) || !productName || !["new", "unused"].includes(condition(productName)) || accessoryText.test(productName)) { skippedRows += 1; continue; }
+    if (!/^\d{8,14}$/.test(jan) || !productName || ["used", "refurbished"].includes(condition(productName)) || accessoryText.test(productName)) { skippedRows += 1; continue; }
     const stores = [];
     for (const provider of providers) {
       const price = money(row[indexOf.get(provider)]);
