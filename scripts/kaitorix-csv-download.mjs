@@ -6,7 +6,7 @@ const workerUrl = (process.env.SPREA_WORKER_URL ?? "https://sprea-research.suuu-
 const baseUrl = "https://kaitorix.app";
 const minProductPriceYen = Math.max(0, Number(process.env.KAITORIX_MIN_PRODUCT_PRICE_YEN ?? 5_000));
 const maxStoresPerProduct = Math.max(1, Math.min(5, Number(process.env.KAITORIX_MAX_STORES_PER_PRODUCT ?? 2)));
-const maxCandidates = Math.max(1, Number(process.env.KAITORIX_MAX_CANDIDATES ?? 10_000));
+const maxCandidates = Math.max(1, Number(process.env.KAITORIX_MAX_CANDIDATES ?? 5_000));
 
 if (!apiKey) throw new Error("KAITORIX_API_KEY is not configured");
 if (!adminToken) throw new Error("SPREA_ADMIN_TOKEN is not configured");
