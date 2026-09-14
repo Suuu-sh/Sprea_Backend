@@ -104,13 +104,13 @@ async function rebuildDiscoveryQueue(db:D1Database,providers:string[],meta:Disco
 }
 
 export async function buildDiscoveryCandidates(db:D1Database,at=new Date()):Promise<{quotes:number;candidates:number;canonical:number}>{
- const rows=(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes) SELECT provider,source_type,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused','unknown') AND price>0 AND (source_type<>'csv' OR json_extract(attributes_json,'$.snapshotDate')=?)`).bind(jstDate(at)).all<QuoteRow>()).results;
- const currentCsvRows=rows.filter(row=>row.source_type==="csv"),activeRows=currentCsvRows.length?currentCsvRows:rows;
- // Once a complete CSV snapshot is available, it is the buyback source of
- // truth.  Drop pre-CSV/API rows in the same daily rebuild so they cannot keep
- // stale candidates and provider state alive (and so later runs never read
- // them).  If no current CSV rows exist, retain the legacy/API path unchanged.
- if(currentCsvRows.length)await db.prepare("DELETE FROM buyback_quotes WHERE source_type<>'csv' OR COALESCE(json_extract(attributes_json,'$.snapshotDate'),'')<>?").bind(jstDate(at)).run();
+ const snapshotDate=jstDate(at),currentCsvRows=(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes WHERE source_type='csv' AND json_extract(attributes_json,'$.snapshotDate')=?) SELECT provider,source_type,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused','unknown') AND price>0`).bind(snapshotDate).all<QuoteRow>()).results;
+ // A complete CSV snapshot is the buyback source of truth.  Read only that
+ // snapshot when it exists; do not delete the old rows here because deleting a
+ // large pre-CSV history on every daily rebuild consumes the D1 write quota.
+ // The one-time retention migration handles old history separately.
+ const rows=currentCsvRows.length?currentCsvRows:(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes) SELECT provider,source_type,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused','unknown') AND price>0`).all<QuoteRow>()).results;
+ const activeRows=rows;
  const groups=new Map<string,QuoteRow[]>();for(const row of activeRows){const key=candidateIdentity(row),items=groups.get(key)??[];items.push(row);groups.set(key,items);}
  const aliases=(await db.prepare("SELECT alias_type,alias_value,condition,canonical_product_id FROM canonical_product_aliases WHERE alias_type IN ('gtin','mpn')").all<any>()).results,aliasMap=new Map(aliases.map(row=>[`${row.alias_type}:${row.alias_value}:${row.condition}`,Number(row.canonical_product_id)]));
  const missing:[string,QuoteRow,string,string][]=[];for(const[identity,items]of groups){const best=[...items].sort((a,b)=>b.price-a.price)[0],jan=validJan(best.jan),model=normalizeModelNumber(best.model_number),aliasType=jan?"gtin":"mpn",aliasValue=jan??`${model}:`;if((jan||model)&&!aliasMap.has(`${aliasType}:${aliasValue}:${best.condition}`))missing.push([identity,best,aliasType,aliasValue]);}
