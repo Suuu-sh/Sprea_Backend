@@ -6,7 +6,7 @@ import {ImportBuybackQuotes} from "./application/import-buyback-quotes";
 import {importKaitorixCsvCandidates} from "./application/import-kaitorix-csv-candidates";
 import {D1BuybackQuoteRepository} from "./infrastructure/d1-buyback-quote-repository";
 import {D1ProductResolver} from "./infrastructure/d1-product-resolver";
-import {discoveryFunnel,markDiscoveryQueueDirty,runProductDiscovery} from "./discovery";
+import {discoveryFunnel,discoveryQueueStatus,markDiscoveryQueueDirty,runProductDiscovery} from "./discovery";
 import {researchAnalytics} from "./analytics";
 import {archiveKaitorixCsv,downloadKaitorixCsv,jstDate,readKaitorixCsvProgress,writeKaitorixCsvProgress} from "./application/kaitorix-csv-download";
 
@@ -117,6 +117,7 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
  }
  if(request.method==="POST"&&path==="/admin/discover"){const body=await request.json<{limit?:number}>().catch(()=>({} as {limit?:number}));return json(await runProductDiscovery(env,"manual",body.limit??30),202);}
  if(request.method==="GET"&&path==="/api/research/dashboard")return cachedJson(request,"sprea-dashboard",60,async()=>json(await dashboard(env.DB)),ctx);
+ if(request.method==="GET"&&path==="/api/research/queue-status")return cachedJson(request,"sprea-queue-status",60,async()=>json(await discoveryQueueStatus(env.DB)),ctx);
  if(request.method==="GET"&&path==="/api/research/discovery-candidates"){
   const cache=await caches.open("sprea-discovery"),cacheKey=new Request(request.url,{method:"GET"}),cached=await cache.match(cacheKey);if(cached)return cached;
   const response=json(await discoveryCandidates(env.DB,url,Boolean(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG)));response.headers.set("cache-control","public, max-age=120, stale-while-revalidate=300");ctx?.waitUntil(cache.put(cacheKey,response.clone()));return response;
