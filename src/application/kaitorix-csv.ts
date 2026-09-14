@@ -150,7 +150,7 @@ export function parseKaitorixCsvCandidates(
   const rows = parseCsv(csv);
   if (rows.length < 1) return {candidates: [], rowsRead: 0, skippedRows: 0, warnings: []};
 
-  const minProductPriceYen = Math.max(0, Math.floor(options.minProductPriceYen ?? 10_000));
+  const minProductPriceYen = Math.max(0, Math.floor(options.minProductPriceYen ?? 5_000));
   const maxStoresPerProduct = Math.max(1, Math.min(5, Math.floor(options.maxStoresPerProduct ?? 2)));
   const headers = rows[0].map(header => header.trim());
   const providers = headers.filter(header => !BASE_COLUMNS.has(header) && !header.endsWith(TIMESTAMP_SUFFIX));
