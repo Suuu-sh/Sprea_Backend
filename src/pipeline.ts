@@ -18,7 +18,17 @@ export async function resolveProduct(db:D1Database,o:ListingObservation):Promise
 
 async function storeObservation(db:D1Database,product:Resolved,o:ListingObservation):Promise<number>{const shipping=finiteInt(o.shippingYen),fee=finiteInt(o.feeYen),reward=finiteInt(o.rewardYen),stockStatus=o.stockStatus??stockStatusFromQuantity(o.stock);await db.prepare(`INSERT INTO research_listings(canonical_product_id,source,external_id,side,title,url,resolver_confidence,match_reason,raw_json,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,external_id) DO UPDATE SET canonical_product_id=excluded.canonical_product_id,side=excluded.side,title=excluded.title,url=excluded.url,resolver_confidence=excluded.resolver_confidence,match_reason=excluded.match_reason,raw_json=excluded.raw_json,updated_at=MAX(updated_at,excluded.updated_at)`).bind(product.id,o.source,o.externalId,o.side,o.title,o.url??"",product.confidence,product.reason,JSON.stringify(o.raw??{}),o.capturedAt,o.capturedAt).run();const listing=await db.prepare("SELECT id FROM research_listings WHERE source=? AND external_id=?").bind(o.source,o.externalId).first<{id:number}>();if(!listing)throw new Error("listing upsert failed");const previous=await db.prepare("SELECT price_yen,shipping_yen,fee_yen,reward_yen,stock,stock_status,captured_at FROM latest_prices WHERE listing_id=?").bind(listing.id).first<any>();const isLatest=!previous||o.capturedAt>=previous.captured_at,changed=isLatest&&(!previous||previous.price_yen!==o.priceYen||previous.shipping_yen!==shipping||previous.fee_yen!==fee||previous.reward_yen!==reward||previous.stock!==o.stock||previous.stock_status!==stockStatus);await db.prepare(`INSERT INTO latest_prices(listing_id,price_yen,shipping_yen,fee_yen,reward_yen,stock,captured_at,stock_status) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(listing_id) DO UPDATE SET price_yen=excluded.price_yen,shipping_yen=excluded.shipping_yen,fee_yen=excluded.fee_yen,reward_yen=excluded.reward_yen,stock=excluded.stock,captured_at=excluded.captured_at,stock_status=excluded.stock_status WHERE excluded.captured_at>latest_prices.captured_at`).bind(listing.id,o.priceYen,shipping,fee,reward,o.stock,o.capturedAt,stockStatus).run();if(!changed)return 0;const result=await db.prepare("INSERT OR IGNORE INTO research_price_snapshots(listing_id,price_yen,shipping_yen,fee_yen,reward_yen,stock,captured_at) VALUES(?,?,?,?,?,?,?)").bind(listing.id,o.priceYen,shipping,fee,reward,o.stock,o.capturedAt).run();return result.meta.changes??0;}
 async function settings(db:D1Database){return(await db.prepare("SELECT * FROM research_settings WHERE id=1").first<any>())!;}
-type VariationRow={product_id:number;listing_id:number;side:string;price_yen:number};
+type VariationRow={product_id:number;listing_id:number;side:string;price_yen:number;captured_at:string};
+
+// Keep IN clauses comfortably below SQLite/D1 bind limits.  More importantly,
+// resolving listing ids first lets the snapshot queries use the existing
+// (listing_id, captured_at) index instead of scanning the entire history.
+const LISTING_ID_CHUNK_SIZE=200;
+function chunks<T>(values:T[],size=LISTING_ID_CHUNK_SIZE):T[][]{
+ const result:T[][]=[];
+ for(let index=0;index<values.length;index+=size)result.push(values.slice(index,index+size));
+ return result;
+}
 
 /** Load the 48-hour price history for all products in one indexed query. */
 async function priceVariations(db:D1Database,productIds:number[],at:Date):Promise<Map<number,number|null>>{
@@ -27,7 +37,15 @@ async function priceVariations(db:D1Database,productIds:number[],at:Date):Promis
  if(!ids.length)return result;
  const since=new Date(at.getTime()-48*3_600_000).toISOString();
  const placeholders=ids.map(()=>"?").join(",");
- const rows=(await db.prepare(`SELECT l.canonical_product_id product_id,s.listing_id,l.side,s.price_yen FROM research_price_snapshots s JOIN research_listings l ON l.id=s.listing_id WHERE l.canonical_product_id IN (${placeholders}) AND s.captured_at>=? AND s.captured_at<=? AND s.price_yen>0 ORDER BY s.captured_at`).bind(...ids,since,at.toISOString()).all<VariationRow>()).results;
+ const listingRows=(await db.prepare(`SELECT id,canonical_product_id product_id,side FROM research_listings WHERE canonical_product_id IN (${placeholders})`).bind(...ids).all<{id:number;product_id:number;side:string}>()).results;
+ const productByListing=new Map(listingRows.map(row=>[Number(row.id),{product_id:Number(row.product_id),side:String(row.side)}]));
+ const rows:VariationRow[]=[];
+ for(const listingChunk of chunks(listingRows.map(row=>Number(row.id)))){
+  const listingPlaceholders=listingChunk.map(()=>"?").join(",");
+  const snapshotRows=(await db.prepare(`SELECT listing_id,price_yen,captured_at FROM research_price_snapshots WHERE listing_id IN (${listingPlaceholders}) AND captured_at>=? AND captured_at<=? AND price_yen>0`).bind(...listingChunk,since,at.toISOString()).all<{listing_id:number;price_yen:number;captured_at:string}>()).results;
+  for(const row of snapshotRows){const listing=productByListing.get(Number(row.listing_id));if(listing)rows.push({product_id:listing.product_id,listing_id:Number(row.listing_id),side:listing.side,price_yen:Number(row.price_yen),captured_at:String(row.captured_at)});}
+ }
+ rows.sort((a,b)=>a.captured_at.localeCompare(b.captured_at));
  const grouped=new Map<number,Map<string,number[]>>();
  for(const row of rows){const byListing=grouped.get(Number(row.product_id))??new Map<string,number[]>(),key=`${row.side}:${row.listing_id}`,values=byListing.get(key)??[];values.push(Number(row.price_yen));byListing.set(key,values);grouped.set(Number(row.product_id),byListing);}
  for(const [productId,byListing] of grouped){const measured=[...byListing.values()].map(calculatePriceVariation).filter((value):value is number=>value!==null);result.set(productId,measured.length?Math.max(...measured):null);}
@@ -55,8 +73,15 @@ async function loadEvaluationObservations(db:D1Database,productIds:number[],sinc
  const result=new Map<number,EvaluationObservation[]>(ids.map(id=>[id,[]]));
  if(!ids.length)return result;
  const placeholders=ids.map(()=>"?").join(",");
- const rows=(await db.prepare(`WITH observations AS (SELECT s.id snapshot_id,s.listing_id,s.price_yen,s.shipping_yen,s.fee_yen,s.reward_yen,s.stock,s.captured_at FROM research_price_snapshots s UNION ALL SELECT NULL,p.listing_id,p.price_yen,p.shipping_yen,p.fee_yen,p.reward_yen,p.stock,p.captured_at FROM latest_prices p) SELECT ob.*,l.canonical_product_id product_id,l.side,l.url FROM observations ob JOIN research_listings l ON l.id=ob.listing_id JOIN canonical_products p ON p.id=l.canonical_product_id WHERE l.canonical_product_id IN (${placeholders}) AND p.condition='new' AND ob.price_yen>0 AND ob.stock>0 AND ob.captured_at>=? AND ob.captured_at<=?`).bind(...ids,since,at.toISOString()).all<EvaluationObservation>()).results;
- for(const row of rows){const values=result.get(Number(row.product_id));if(values)values.push(row);}
+ const listingRows=(await db.prepare(`SELECT l.id,l.canonical_product_id product_id,l.side,l.url FROM research_listings l JOIN canonical_products p ON p.id=l.canonical_product_id WHERE l.canonical_product_id IN (${placeholders}) AND p.condition='new'`).bind(...ids).all<{id:number;product_id:number;side:string;url:string}>()).results;
+ const listingById=new Map(listingRows.map(row=>[Number(row.id),{product_id:Number(row.product_id),side:String(row.side),url:String(row.url??"")}]))
+ for(const listingChunk of chunks(listingRows.map(row=>Number(row.id)))){
+  const listingPlaceholders=listingChunk.map(()=>"?").join(",");
+  const snapshots=(await db.prepare(`SELECT id snapshot_id,listing_id,price_yen,shipping_yen,fee_yen,reward_yen,stock,captured_at FROM research_price_snapshots WHERE listing_id IN (${listingPlaceholders}) AND price_yen>0 AND stock>0 AND captured_at>=? AND captured_at<=?`).bind(...listingChunk,since,at.toISOString()).all<{snapshot_id:number;listing_id:number;price_yen:number;shipping_yen:number;fee_yen:number;reward_yen:number;stock:number;captured_at:string}>()).results;
+  const latest=(await db.prepare(`SELECT listing_id,price_yen,shipping_yen,fee_yen,reward_yen,stock,captured_at FROM latest_prices WHERE listing_id IN (${listingPlaceholders}) AND price_yen>0 AND stock>0 AND captured_at>=? AND captured_at<=?`).bind(...listingChunk,since,at.toISOString()).all<{listing_id:number;price_yen:number;shipping_yen:number;fee_yen:number;reward_yen:number;stock:number;captured_at:string}>()).results;
+  for(const row of snapshots){const listing=listingById.get(Number(row.listing_id));if(!listing)continue;const values=result.get(listing.product_id);if(values)values.push({product_id:listing.product_id,snapshot_id:Number(row.snapshot_id),listing_id:Number(row.listing_id),price_yen:Number(row.price_yen),shipping_yen:Number(row.shipping_yen),fee_yen:Number(row.fee_yen),reward_yen:Number(row.reward_yen),stock:Number(row.stock),captured_at:String(row.captured_at),side:listing.side,url:listing.url});}
+  for(const row of latest){const listing=listingById.get(Number(row.listing_id));if(!listing)continue;const values=result.get(listing.product_id);if(values)values.push({product_id:listing.product_id,snapshot_id:null,listing_id:Number(row.listing_id),price_yen:Number(row.price_yen),shipping_yen:Number(row.shipping_yen),fee_yen:Number(row.fee_yen),reward_yen:Number(row.reward_yen),stock:Number(row.stock),captured_at:String(row.captured_at),side:listing.side,url:listing.url});}
+ }
  return result;
 }
 

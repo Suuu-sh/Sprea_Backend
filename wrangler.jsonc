@@ -4,9 +4,10 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-08-23",
   "triggers": {
-    // Explore the durable queue every five minutes; idle invocations no longer
-    // hit D1 every minute while the queue still advances continuously.
-    "crons": ["*/5 * * * *", "*/30 * * * *"]
+    // Explore the durable queue every five minutes. Maintenance/evaluation is
+    // intentionally six-hourly: it does not need minute-level freshness and
+    // its history reads should never compete with the discovery queue budget.
+    "crons": ["*/5 * * * *", "0 */6 * * *"]
   },
   "d1_databases": [{
     "binding": "DB",
