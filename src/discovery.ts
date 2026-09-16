@@ -166,14 +166,13 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
  const settings=await env.DB.prepare("SELECT minimum_profit_yen,sale_shipping_yen,fees_yen FROM research_settings WHERE id=1").first<{minimum_profit_yen:number;sale_shipping_yen:number;fees_yen:number}>();
  const minimumProfit=Math.max(0,Number(settings?.minimum_profit_yen??5000)),saleCosts=Math.max(0,Number(settings?.sale_shipping_yen??0)+Number(settings?.fees_yen??0));
  // The provider-state table is the durable exploration queue.  It is
- // materialized once per snapshot, so this query uses the due index and reads
- // only rows whose next attempt is ready; it no longer cross joins all
- // candidates with every provider on every five-minute tick.
+ // materialized only for searchable candidates, so this query uses the due
+ // index directly and reads only rows whose next attempt is ready; it no
+ // longer cross joins all candidates with every provider on every five-minute tick.
  const providerPlaceholders=names.map(()=>"?").join(","),pairLimit=trigger==="scheduled"?Math.max(1,Math.floor(12/names.length)):Math.max(1,Math.min(100,limit))*names.length,pairs=(await env.DB.prepare(`SELECT c.*,s.provider,s.status provider_status,s.last_searched_at
   FROM product_discovery_provider_state s
   JOIN product_discovery_candidates c ON c.id=s.candidate_id
  WHERE s.provider IN (${providerPlaceholders})
-    AND c.resolver_status IN ('searchable','retail_found')
     AND s.next_search_at<=?
   ORDER BY s.next_search_at,s.queue_priority_yen DESC,s.candidate_id
   LIMIT ?`).bind(...names,at.toISOString(),pairLimit).all<Candidate&{provider:string}>()).results;
