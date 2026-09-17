@@ -169,13 +169,21 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
  // materialized only for searchable candidates, so this query uses the due
  // index directly and reads only rows whose next attempt is ready; it no
  // longer cross joins all candidates with every provider on every five-minute tick.
- const providerPlaceholders=names.map(()=>"?").join(","),pairLimit=trigger==="scheduled"?Math.max(1,Math.floor(12/names.length)):Math.max(1,Math.min(100,limit))*names.length,pairs=(await env.DB.prepare(`SELECT c.*,s.provider,s.status provider_status,s.last_searched_at
+ // Query each provider independently.  The due index is ordered by
+ // (provider,next_search_at,priority), so a fixed-provider query can stop
+ // after the requested batch.  An IN (...) query has to merge providers and
+ // sort all due rows into a temporary B-tree first; with thousands of pending
+ // candidates that would read the entire queue on every five-minute tick and
+ // exhaust D1's row-read quota before the queue could finish.
+ const perProviderLimit=trigger==="scheduled"?Math.max(1,Math.floor(12/names.length)):Math.max(1,Math.min(100,limit)),pairLimit=perProviderLimit*names.length;
+ const providerRows=await Promise.all(names.map(provider=>env.DB.prepare(`SELECT c.*,s.provider,s.status provider_status,s.last_searched_at
   FROM product_discovery_provider_state s
   JOIN product_discovery_candidates c ON c.id=s.candidate_id
- WHERE s.provider IN (${providerPlaceholders})
+ WHERE s.provider=?
     AND s.next_search_at<=?
   ORDER BY s.next_search_at,s.queue_priority_yen DESC,s.candidate_id
-  LIMIT ?`).bind(...names,at.toISOString(),pairLimit).all<Candidate&{provider:string}>()).results;
+  LIMIT ?`).bind(provider,at.toISOString(),perProviderLimit).all<Candidate&{provider:string}>()));
+ const pairs=providerRows.flatMap(result=>result.results).slice(0,pairLimit);
  if(!pairs.length)return{status:"idle",runId:0,...built,searched:0,retailFound:0,yahooFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0,providers:{}};
  const insert=await env.DB.prepare("INSERT INTO product_discovery_runs(trigger,status,quote_count,candidate_count,canonical_count,started_at) VALUES(?,'running',?,?,?,?)").bind(trigger,built.quotes,built.candidates,built.canonical,at.toISOString()).run(),runId=Number(insert.meta.last_row_id),deadline=Date.now()+MAX_DISCOVERY_RUNTIME_MS;
  let purchasable=0,profitable=0,threshold=0,buys=0,failures=0;
