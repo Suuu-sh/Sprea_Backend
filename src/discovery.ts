@@ -59,7 +59,7 @@ export function rakutenIdentityMatches(candidate:Pick<Candidate,"jan"|"model_num
 
 async function promote(db:D1Database,row:QuoteRow,identity:string,at:string):Promise<number|null>{const jan=validJan(row.jan);if(!jan&&!normalizeModelNumber(row.model_number))return null;const aliasType=jan?"gtin":"mpn",aliasValue=jan??`${normalizeModelNumber(row.model_number)}:`;const existing=await db.prepare("SELECT canonical_product_id FROM canonical_product_aliases WHERE alias_type=? AND alias_value=? AND condition=?").bind(aliasType,aliasValue,row.condition).first<{canonical_product_id:number}>();if(existing)return existing.canonical_product_id;const key=jan?`gtin:${jan}:${row.condition}`:`mpn:${aliasValue}:${row.condition}`;await db.prepare(`INSERT INTO canonical_products(canonical_key,gtin,manufacturer_part_number,brand,model,variant,category,capacity,color,condition,title,created_at,updated_at) VALUES(?,?,?,?,?,'',?,'','',?,?,?,?) ON CONFLICT(canonical_key) DO NOTHING`).bind(key,jan,row.model_number,row.brand??"",row.product_name,row.category??"",row.condition,row.product_name,at,at).run();const product=await db.prepare("SELECT id FROM canonical_products WHERE canonical_key=?").bind(key).first<{id:number}>();if(!product)return null;await db.prepare("INSERT OR IGNORE INTO canonical_product_aliases(alias_type,alias_value,condition,canonical_product_id,created_at) VALUES(?,?,?,?,?)").bind(aliasType,aliasValue,row.condition,product.id,at).run();return product.id;}
 
-type DiscoveryQueueMeta={dirty:number;reset_requested:number;provider_signature:string;generation:number;quote_count:number;candidate_count:number;canonical_count:number;rebuilt_at:string|null;rebuild_lock:number;rebuild_started_at:string|null};
+type DiscoveryQueueMeta={dirty:number;reset_requested:number;provider_signature:string;generation:number;quote_count:number;candidate_count:number;canonical_count:number;rebuilt_at:string|null};
 const queueProviderSignature=(providers:string[])=>[...new Set(providers)].sort().join(",");
 
 /**
@@ -70,7 +70,7 @@ const queueProviderSignature=(providers:string[])=>[...new Set(providers)].sort(
  */
 export async function markDiscoveryQueueDirty(db:D1Database,reset=true,at=new Date()):Promise<void>{
  try{
-  await db.prepare(`INSERT INTO product_discovery_queue_meta(id,dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at,updated_at) VALUES(1,1,?, '',0,0,0,0,NULL,?) ON CONFLICT(id) DO UPDATE SET dirty=1,reset_requested=MAX(reset_requested,excluded.reset_requested),rebuild_started_at=CASE WHEN rebuild_lock=1 THEN rebuild_started_at ELSE NULL END,updated_at=excluded.updated_at`).bind(reset?1:0,at.toISOString()).run();
+  await db.prepare(`INSERT INTO product_discovery_queue_meta(id,dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at,updated_at) VALUES(1,1,?, '',0,0,0,0,NULL,?) ON CONFLICT(id) DO UPDATE SET dirty=1,reset_requested=MAX(reset_requested,excluded.reset_requested),updated_at=excluded.updated_at`).bind(reset?1:0,at.toISOString()).run();
  }catch(error){
   // Keep quote ingestion compatible with a database while the queue migration
   // is being applied.  The scheduled worker will use the materialized queue
@@ -81,23 +81,19 @@ export async function markDiscoveryQueueDirty(db:D1Database,reset=true,at=new Da
 }
 
 async function readDiscoveryQueueMeta(db:D1Database):Promise<DiscoveryQueueMeta|null>{
- return await db.prepare("SELECT dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at,rebuild_lock,rebuild_started_at FROM product_discovery_queue_meta WHERE id=1").first<DiscoveryQueueMeta>();
+ return await db.prepare("SELECT dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at FROM product_discovery_queue_meta WHERE id=1").first<DiscoveryQueueMeta>();
 }
 
-async function acquireDiscoveryQueueRebuild(db:D1Database,at:Date,signature:string):Promise<boolean>{
- const now=at.toISOString(),retryAfter=new Date(at.getTime()-15*60_000).toISOString();
- const result=await db.prepare(`UPDATE product_discovery_queue_meta SET rebuild_lock=1,rebuild_started_at=?,updated_at=? WHERE id=1 AND (dirty=1 OR provider_signature<>?) AND ((rebuild_lock=0 AND (rebuild_started_at IS NULL OR rebuild_started_at<=?)) OR (rebuild_lock=1 AND rebuild_started_at<=?))`).bind(now,now,signature,retryAfter,retryAfter).run();
- return Number(result.meta.changes??0)>0;
+type DiscoveryRebuildLock={token:string;previousSignature:string};
+function parseDiscoveryRebuildLock(signature:string):{startedAt:number;providerSignature:string}|null{const match=signature.match(/^__rebuilding__(\d+)__(.*)$/);return match?{startedAt:Number(match[1]),providerSignature:match[2]}:null;}
+async function acquireDiscoveryQueueRebuild(db:D1Database,meta:DiscoveryQueueMeta,at:Date,signature:string):Promise<DiscoveryRebuildLock|null>{
+ const existing=parseDiscoveryRebuildLock(meta.provider_signature),now=at.getTime();
+ if(existing&&now-existing.startedAt<15*60_000)return null;
+ const token=`__rebuilding__${now}__${signature}`,previousSignature=existing?.providerSignature??meta.provider_signature;
+ const result=await db.prepare("UPDATE product_discovery_queue_meta SET provider_signature=?,updated_at=? WHERE id=1 AND provider_signature=? AND (dirty=1 OR provider_signature<>?)").bind(token,at.toISOString(),meta.provider_signature,signature).run();
+ return Number(result.meta.changes??0)>0?{token,previousSignature}:null;
 }
-
-async function releaseDiscoveryQueueRebuild(db:D1Database,at:Date,success:boolean):Promise<void>{
- const now=at.toISOString();
- if(success){
-  await db.prepare("UPDATE product_discovery_queue_meta SET dirty=0,reset_requested=0,rebuild_lock=0,rebuild_started_at=NULL,updated_at=? WHERE id=1").bind(now).run();
- }else{
-  await db.prepare("UPDATE product_discovery_queue_meta SET rebuild_lock=0,rebuild_started_at=?,updated_at=? WHERE id=1").bind(now,now).run();
- }
-}
+async function releaseDiscoveryQueueRebuild(db:D1Database,lock:DiscoveryRebuildLock,at:Date):Promise<void>{await db.prepare("UPDATE product_discovery_queue_meta SET provider_signature=?,updated_at=? WHERE id=1 AND provider_signature=?").bind(lock.previousSignature,at.toISOString(),lock.token).run();}
 
 /**
  * Materialize one provider-state row per candidate/provider only when the
@@ -119,8 +115,8 @@ async function rebuildDiscoveryQueue(db:D1Database,providers:string[],meta:Disco
   await db.prepare(statement).bind(provider,now,now).run();
  }
  const generation=Number(meta?.generation??0)+1;
- await db.prepare(`UPDATE product_discovery_queue_meta SET dirty=0,reset_requested=0,rebuild_lock=0,rebuild_started_at=NULL,provider_signature=?,generation=?,quote_count=?,candidate_count=?,canonical_count=?,rebuilt_at=?,updated_at=? WHERE id=1`).bind(signature,generation,counts.quotes,counts.candidates,counts.canonical,now,now).run();
- return{dirty:0,reset_requested:0,rebuild_lock:0,rebuild_started_at:null,provider_signature:signature,generation,quote_count:counts.quotes,candidate_count:counts.candidates,canonical_count:counts.canonical,rebuilt_at:now};
+ await db.prepare(`UPDATE product_discovery_queue_meta SET dirty=0,reset_requested=0,provider_signature=?,generation=?,quote_count=?,candidate_count=?,canonical_count=?,rebuilt_at=?,updated_at=? WHERE id=1`).bind(signature,generation,counts.quotes,counts.candidates,counts.canonical,now,now).run();
+ return{dirty:0,reset_requested:0,provider_signature:signature,generation,quote_count:counts.quotes,candidate_count:counts.candidates,canonical_count:counts.canonical,rebuilt_at:now};
 }
 
 export async function buildDiscoveryCandidates(db:D1Database,at=new Date()):Promise<{quotes:number;candidates:number;canonical:number}>{
@@ -181,12 +177,13 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
   // A dirty flag is set by the completed daily CSV import (or an explicit
   // buyback ingest).  Only one Worker invocation may rebuild the projection;
   // otherwise a manual click racing the cron repeats thousands of upserts.
-  if(!await acquireDiscoveryQueueRebuild(env.DB,at,signature))return{status:"rebuild_pending",runId:0,...built,searched:0,retailFound:0,yahooFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0,deferred:0,providers:{}};
+  const rebuildLock=queueMeta&&await acquireDiscoveryQueueRebuild(env.DB,queueMeta,at,signature);
+  if(!rebuildLock)return{status:"rebuild_pending",runId:0,...built,searched:0,retailFound:0,yahooFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0,deferred:0,providers:{}};
   try{
    if(!queueMeta||queueMeta.dirty)built=await buildDiscoveryCandidates(env.DB,at);
    await rebuildDiscoveryQueue(env.DB,names,queueMeta,built,at);
   }catch(error){
-   try{await releaseDiscoveryQueueRebuild(env.DB,at,false);}catch(releaseError){console.warn("discovery queue rebuild release failed",releaseError);}
+   try{await releaseDiscoveryQueueRebuild(env.DB,rebuildLock,at);}catch(releaseError){console.warn("discovery queue rebuild release failed",releaseError);}
    throw error;
   }
  }
