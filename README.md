@@ -80,7 +80,7 @@ curl -X POST http://localhost:8787/api/ingest/listings \
 
 ResolverはPrecisionを優先し、GTIN完全一致、メーカー型番完全一致、またはbrand/model/variantの完全一致だけを受理します。曖昧なタイトル類似だけでは商品を作りません。`latest_prices` は毎回更新され、価格・送料・手数料・還元・在庫のいずれかが変化したときだけ履歴snapshotを追加します。同一商品の複数買取店を保持し、最高値、次点価格、店舗数、価格差、解決信頼度からSprea Scoreを計算します。
 
-Cloudflare Cronは探索キューを5分ごと、評価・Collectorを6時間ごと（UTC）に実行します。同じ時刻の再実行では価格・取引・評価を重複させません。候補が空の探索実行ではD1へ履歴を書き込みません。Dashboard・Analyticsなどの集計APIは短時間キャッシュし、Evaluatorは各期限以後で最初の売却価格を使います。GitHub Actionsから別のCollectorを定期実行する経路は設けません。
+Cloudflare Cronは探索キューを5分ごと、評価・Collectorを6時間ごと（UTC）に実行します。同じ時刻の再実行では価格・取引・評価を重複させません。候補が空の探索実行ではD1へ履歴を書き込みません。探索で結果が出なかったペアは14日間、プロバイダーエラーは最長7日間再試行を待機し、CSV更新時は価格が変わった候補だけを再開します。Dashboard・Analyticsなどの集計APIは短時間キャッシュし、Evaluatorは各期限以後で最初の売却価格を使います。GitHub Actionsから別のCollectorを定期実行する経路は設けません。
 
 ## テスト
 
