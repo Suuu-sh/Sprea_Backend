@@ -93,7 +93,7 @@ async function acquireDiscoveryQueueRebuild(db:D1Database,meta:DiscoveryQueueMet
  const result=await db.prepare("UPDATE product_discovery_queue_meta SET provider_signature=?,updated_at=? WHERE id=1 AND provider_signature=? AND (dirty=1 OR provider_signature<>?)").bind(token,at.toISOString(),meta.provider_signature,signature).run();
  return Number(result.meta.changes??0)>0?{token,previousSignature}:null;
 }
-async function releaseDiscoveryQueueRebuild(db:D1Database,lock:DiscoveryRebuildLock,at:Date):Promise<void>{await db.prepare("UPDATE product_discovery_queue_meta SET provider_signature=?,updated_at=? WHERE id=1 AND provider_signature=?").bind(lock.previousSignature,at.toISOString(),lock.token).run();}
+async function releaseDiscoveryQueueRebuild(db:D1Database,lock:DiscoveryRebuildLock,at:Date):Promise<void>{const retryToken=`__rebuilding__${at.getTime()}__${lock.previousSignature}`;await db.prepare("UPDATE product_discovery_queue_meta SET provider_signature=?,updated_at=? WHERE id=1 AND provider_signature=?").bind(retryToken,at.toISOString(),lock.token).run();}
 
 /**
  * Materialize one provider-state row per candidate/provider only when the
