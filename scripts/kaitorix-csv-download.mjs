@@ -169,8 +169,8 @@ for (let index = 0; index < extracted.candidates.length || (index === 0 && extra
   const importedBatch = await response.json();
   imported += Number(importedBatch.accepted ?? 0);
 }
-// Mark the durable provider queue for one rebuild immediately; the five-minute
-// cron continues it in small batches and resumes after a failed request.
-const discovery = await fetch(`${workerUrl}/api/research/discovery/run`, {method: "POST"});
-if (!discovery.ok && discovery.status !== 202) await requireOk(discovery, "Sprea discovery queue start");
+// The five-minute Worker cron notices the completed snapshot and performs one
+// durable queue rebuild.  Do not start discovery in this workflow: doing so
+// overlaps the CSV write burst with queue materialisation and can spend the
+// D1 write budget twice before the next scheduled tick.
 console.log(JSON.stringify({date, bytes: bytes.byteLength, objectKey: result.objectKey, status: result.status, rowsRead: extracted.rowsRead, candidates: extracted.candidates.length, imported}));

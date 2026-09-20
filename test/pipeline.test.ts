@@ -17,10 +17,11 @@ import buybackDailyStats from "../migrations/0012_buyback_daily_stats.sql?raw";
 import discoveryReadOptimization from "../migrations/0013_discovery_read_optimization.sql?raw";
 import materializedDiscoveryQueue from "../migrations/0014_materialized_discovery_queue.sql?raw";
 import csvRetentionCleanup from "../migrations/0015_csv_retention_cleanup.sql?raw";
+import discoveryRebuildLock from "../migrations/0016_discovery_rebuild_lock.sql?raw";
 import {buildDiscoveryCandidates,markDiscoveryQueueDirty,runProductDiscovery} from "../src/discovery";
 
 function statements(migration:string){const out:string[]=[],lines=migration.split("\n");let buffer="",trigger=false;for(const line of lines){if(!trigger&&/^CREATE TRIGGER/i.test(line.trim()))trigger=true;buffer+=line+"\n";if(trigger){if(/^END;\s*$/i.test(line.trim())){out.push(buffer.trim().replace(/;$/,""));buffer="";trigger=false;}}else if(line.includes(";")){const parts=buffer.split(";");for(const part of parts.slice(0,-1))if(part.trim())out.push(part.trim());buffer=parts.at(-1)??"";}}if(buffer.trim())out.push(buffer.trim());return out;}
-beforeAll(async()=>{for(const migration of [initial,research,safety,buyback,buybackOpportunity,liveOpportunities,evaluationScores,decisionObservability,productDiscovery,providerDiscovery,buybackDailyStats,discoveryReadOptimization,materializedDiscoveryQueue,csvRetentionCleanup])for(const sql of statements(migration))await env.DB.prepare(sql).run();});
+beforeAll(async()=>{for(const migration of [initial,research,safety,buyback,buybackOpportunity,liveOpportunities,evaluationScores,decisionObservability,productDiscovery,providerDiscovery,buybackDailyStats,discoveryReadOptimization,materializedDiscoveryQueue,csvRetentionCleanup,discoveryRebuildLock])for(const sql of statements(migration))await env.DB.prepare(sql).run();});
 
 describe("Research Worker",()=>{
  it("classifies paper-trading constraints as structured SKIP reasons",()=>{expect(paperTradeSkipReason("open position already exists")).toBe("duplicate_holding");expect(paperTradeSkipReason("insufficient paper cash")).toBe("insufficient_funds");expect(paperTradeSkipReason("other database error")).toBeNull();});

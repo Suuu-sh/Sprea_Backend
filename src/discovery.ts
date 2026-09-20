@@ -59,7 +59,7 @@ export function rakutenIdentityMatches(candidate:Pick<Candidate,"jan"|"model_num
 
 async function promote(db:D1Database,row:QuoteRow,identity:string,at:string):Promise<number|null>{const jan=validJan(row.jan);if(!jan&&!normalizeModelNumber(row.model_number))return null;const aliasType=jan?"gtin":"mpn",aliasValue=jan??`${normalizeModelNumber(row.model_number)}:`;const existing=await db.prepare("SELECT canonical_product_id FROM canonical_product_aliases WHERE alias_type=? AND alias_value=? AND condition=?").bind(aliasType,aliasValue,row.condition).first<{canonical_product_id:number}>();if(existing)return existing.canonical_product_id;const key=jan?`gtin:${jan}:${row.condition}`:`mpn:${aliasValue}:${row.condition}`;await db.prepare(`INSERT INTO canonical_products(canonical_key,gtin,manufacturer_part_number,brand,model,variant,category,capacity,color,condition,title,created_at,updated_at) VALUES(?,?,?,?,?,'',?,'','',?,?,?,?) ON CONFLICT(canonical_key) DO NOTHING`).bind(key,jan,row.model_number,row.brand??"",row.product_name,row.category??"",row.condition,row.product_name,at,at).run();const product=await db.prepare("SELECT id FROM canonical_products WHERE canonical_key=?").bind(key).first<{id:number}>();if(!product)return null;await db.prepare("INSERT OR IGNORE INTO canonical_product_aliases(alias_type,alias_value,condition,canonical_product_id,created_at) VALUES(?,?,?,?,?)").bind(aliasType,aliasValue,row.condition,product.id,at).run();return product.id;}
 
-type DiscoveryQueueMeta={dirty:number;reset_requested:number;provider_signature:string;generation:number;quote_count:number;candidate_count:number;canonical_count:number;rebuilt_at:string|null};
+type DiscoveryQueueMeta={dirty:number;reset_requested:number;provider_signature:string;generation:number;quote_count:number;candidate_count:number;canonical_count:number;rebuilt_at:string|null;rebuild_lock:number;rebuild_started_at:string|null};
 const queueProviderSignature=(providers:string[])=>[...new Set(providers)].sort().join(",");
 
 /**
@@ -70,7 +70,7 @@ const queueProviderSignature=(providers:string[])=>[...new Set(providers)].sort(
  */
 export async function markDiscoveryQueueDirty(db:D1Database,reset=true,at=new Date()):Promise<void>{
  try{
-  await db.prepare(`INSERT INTO product_discovery_queue_meta(id,dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at,updated_at) VALUES(1,1,?, '',0,0,0,0,NULL,?) ON CONFLICT(id) DO UPDATE SET dirty=1,reset_requested=MAX(reset_requested,excluded.reset_requested),updated_at=excluded.updated_at`).bind(reset?1:0,at.toISOString()).run();
+  await db.prepare(`INSERT INTO product_discovery_queue_meta(id,dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at,updated_at) VALUES(1,1,?, '',0,0,0,0,NULL,?) ON CONFLICT(id) DO UPDATE SET dirty=1,reset_requested=MAX(reset_requested,excluded.reset_requested),rebuild_started_at=CASE WHEN rebuild_lock=1 THEN rebuild_started_at ELSE NULL END,updated_at=excluded.updated_at`).bind(reset?1:0,at.toISOString()).run();
  }catch(error){
   // Keep quote ingestion compatible with a database while the queue migration
   // is being applied.  The scheduled worker will use the materialized queue
@@ -81,7 +81,22 @@ export async function markDiscoveryQueueDirty(db:D1Database,reset=true,at=new Da
 }
 
 async function readDiscoveryQueueMeta(db:D1Database):Promise<DiscoveryQueueMeta|null>{
- return await db.prepare("SELECT dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at FROM product_discovery_queue_meta WHERE id=1").first<DiscoveryQueueMeta>();
+ return await db.prepare("SELECT dirty,reset_requested,provider_signature,generation,quote_count,candidate_count,canonical_count,rebuilt_at,rebuild_lock,rebuild_started_at FROM product_discovery_queue_meta WHERE id=1").first<DiscoveryQueueMeta>();
+}
+
+async function acquireDiscoveryQueueRebuild(db:D1Database,at:Date,signature:string):Promise<boolean>{
+ const now=at.toISOString(),retryAfter=new Date(at.getTime()-15*60_000).toISOString();
+ const result=await db.prepare(`UPDATE product_discovery_queue_meta SET rebuild_lock=1,rebuild_started_at=?,updated_at=? WHERE id=1 AND (dirty=1 OR provider_signature<>?) AND ((rebuild_lock=0 AND (rebuild_started_at IS NULL OR rebuild_started_at<=?)) OR (rebuild_lock=1 AND rebuild_started_at<=?))`).bind(now,now,signature,retryAfter,retryAfter).run();
+ return Number(result.meta.changes??0)>0;
+}
+
+async function releaseDiscoveryQueueRebuild(db:D1Database,at:Date,success:boolean):Promise<void>{
+ const now=at.toISOString();
+ if(success){
+  await db.prepare("UPDATE product_discovery_queue_meta SET dirty=0,reset_requested=0,rebuild_lock=0,rebuild_started_at=NULL,updated_at=? WHERE id=1").bind(now).run();
+ }else{
+  await db.prepare("UPDATE product_discovery_queue_meta SET rebuild_lock=0,rebuild_started_at=?,updated_at=? WHERE id=1").bind(now,now).run();
+ }
 }
 
 /**
@@ -104,8 +119,8 @@ async function rebuildDiscoveryQueue(db:D1Database,providers:string[],meta:Disco
   await db.prepare(statement).bind(provider,now,now).run();
  }
  const generation=Number(meta?.generation??0)+1;
- await db.prepare(`UPDATE product_discovery_queue_meta SET dirty=0,reset_requested=0,provider_signature=?,generation=?,quote_count=?,candidate_count=?,canonical_count=?,rebuilt_at=?,updated_at=? WHERE id=1`).bind(signature,generation,counts.quotes,counts.candidates,counts.canonical,now,now).run();
- return{dirty:0,reset_requested:0,provider_signature:signature,generation,quote_count:counts.quotes,candidate_count:counts.candidates,canonical_count:counts.canonical,rebuilt_at:now};
+ await db.prepare(`UPDATE product_discovery_queue_meta SET dirty=0,reset_requested=0,rebuild_lock=0,rebuild_started_at=NULL,provider_signature=?,generation=?,quote_count=?,candidate_count=?,canonical_count=?,rebuilt_at=?,updated_at=? WHERE id=1`).bind(signature,generation,counts.quotes,counts.candidates,counts.canonical,now,now).run();
+ return{dirty:0,reset_requested:0,rebuild_lock:0,rebuild_started_at:null,provider_signature:signature,generation,quote_count:counts.quotes,candidate_count:counts.candidates,canonical_count:counts.canonical,rebuilt_at:now};
 }
 
 export async function buildDiscoveryCandidates(db:D1Database,at=new Date()):Promise<{quotes:number;candidates:number;canonical:number}>{
@@ -124,7 +139,7 @@ export async function buildDiscoveryCandidates(db:D1Database,at=new Date()):Prom
  for(const[,row,aliasType,aliasValue]of missing){const jan=validJan(row.jan),model=normalizeModelNumber(row.model_number),key=jan?`gtin:${jan}:${row.condition}`:`mpn:${model}::${row.condition}`,productId=productByKey.get(key);if(productId){aliasMap.set(`${aliasType}:${aliasValue}:${row.condition}`,productId);aliasStatements.push(db.prepare("INSERT OR IGNORE INTO canonical_product_aliases(alias_type,alias_value,condition,canonical_product_id,created_at) VALUES(?,?,?,?,?)").bind(aliasType,aliasValue,row.condition,productId,at.toISOString()));}}
  if(aliasStatements.length)await db.batch(aliasStatements);
  const config=await db.prepare("SELECT minimum_profit_yen,sale_shipping_yen,fees_yen FROM research_settings WHERE id=1").first<any>(),candidateStatements:D1PreparedStatement[]=[];let canonical=0;
- for(const[identity,items]of groups){const best=[...items].sort((a,b)=>b.price-a.price)[0],jan=validJan(best.jan),model=normalizeModelNumber(best.model_number),aliasType=jan?"gtin":"mpn",aliasValue=jan??`${model}:`,productId=(jan||model)?aliasMap.get(`${aliasType}:${aliasValue}:${best.condition}`)??null:null;if(productId)canonical++;const providers=new Set(items.map(x=>x.provider)),providerCount=Math.max(providers.size,...items.map(csvStoreCount)),targets=purchaseTargets(best.price,config.minimum_profit_yen,config.sale_shipping_yen+config.fees_yen),query=discoveryQuery(best);candidateStatements.push(db.prepare(`INSERT INTO product_discovery_candidates(identity_key,canonical_product_id,jan,model_number,product_name,brand,category,condition,attributes_json,best_buyback_price_yen,best_buyback_provider,buyback_provider_count,resolver_status,resolver_confidence,resolver_reason,search_query,target_purchase_price_yen,discovery_ceiling_yen,next_search_at,first_seen_at,last_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET canonical_product_id=excluded.canonical_product_id,product_name=excluded.product_name,best_buyback_price_yen=excluded.best_buyback_price_yen,best_buyback_provider=excluded.best_buyback_provider,buyback_provider_count=excluded.buyback_provider_count,resolver_status=CASE WHEN product_discovery_candidates.resolver_status='retail_found' THEN 'retail_found' ELSE excluded.resolver_status END,resolver_confidence=excluded.resolver_confidence,resolver_reason=excluded.resolver_reason,search_query=excluded.search_query,target_purchase_price_yen=excluded.target_purchase_price_yen,discovery_ceiling_yen=excluded.discovery_ceiling_yen,last_seen_at=excluded.last_seen_at,updated_at=excluded.updated_at`).bind(identity,productId,best.jan,best.model_number,best.product_name,best.brand,best.category,best.condition,best.attributes_json,best.price,best.provider,providerCount,productId?"searchable":"unresolved",productId?(jan?1:.99):0,productId?(jan?"jan_exact":"model_exact"):"identity_insufficient",query,targets.target,targets.ceiling,at.toISOString(),at.toISOString(),at.toISOString(),at.toISOString()));}
+ for(const[identity,items]of groups){const best=[...items].sort((a,b)=>b.price-a.price)[0],jan=validJan(best.jan),model=normalizeModelNumber(best.model_number),aliasType=jan?"gtin":"mpn",aliasValue=jan??`${model}:`,productId=(jan||model)?aliasMap.get(`${aliasType}:${aliasValue}:${best.condition}`)??null:null;if(productId)canonical++;const providers=new Set(items.map(x=>x.provider)),providerCount=Math.max(providers.size,...items.map(csvStoreCount)),targets=purchaseTargets(best.price,config.minimum_profit_yen,config.sale_shipping_yen+config.fees_yen),query=discoveryQuery(best);candidateStatements.push(db.prepare(`INSERT INTO product_discovery_candidates(identity_key,canonical_product_id,jan,model_number,product_name,brand,category,condition,attributes_json,best_buyback_price_yen,best_buyback_provider,buyback_provider_count,resolver_status,resolver_confidence,resolver_reason,search_query,target_purchase_price_yen,discovery_ceiling_yen,next_search_at,first_seen_at,last_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET canonical_product_id=excluded.canonical_product_id,product_name=excluded.product_name,brand=excluded.brand,category=excluded.category,condition=excluded.condition,attributes_json=excluded.attributes_json,best_buyback_price_yen=excluded.best_buyback_price_yen,best_buyback_provider=excluded.best_buyback_provider,buyback_provider_count=excluded.buyback_provider_count,resolver_status=CASE WHEN product_discovery_candidates.resolver_status='retail_found' THEN 'retail_found' ELSE excluded.resolver_status END,resolver_confidence=excluded.resolver_confidence,resolver_reason=excluded.resolver_reason,search_query=excluded.search_query,target_purchase_price_yen=excluded.target_purchase_price_yen,discovery_ceiling_yen=excluded.discovery_ceiling_yen,updated_at=excluded.updated_at WHERE product_discovery_candidates.canonical_product_id IS NOT excluded.canonical_product_id OR product_discovery_candidates.product_name IS NOT excluded.product_name OR product_discovery_candidates.brand IS NOT excluded.brand OR product_discovery_candidates.category IS NOT excluded.category OR product_discovery_candidates.condition IS NOT excluded.condition OR product_discovery_candidates.attributes_json IS NOT excluded.attributes_json OR product_discovery_candidates.best_buyback_price_yen IS NOT excluded.best_buyback_price_yen OR product_discovery_candidates.best_buyback_provider IS NOT excluded.best_buyback_provider OR product_discovery_candidates.buyback_provider_count IS NOT excluded.buyback_provider_count OR product_discovery_candidates.search_query IS NOT excluded.search_query OR product_discovery_candidates.target_purchase_price_yen IS NOT excluded.target_purchase_price_yen OR product_discovery_candidates.discovery_ceiling_yen IS NOT excluded.discovery_ceiling_yen`).bind(identity,productId,best.jan,best.model_number,best.product_name,best.brand,best.category,best.condition,best.attributes_json,best.price,best.provider,providerCount,productId?"searchable":"unresolved",productId?(jan?1:.99):0,productId?(jan?"jan_exact":"model_exact"):"identity_insufficient",query,targets.target,targets.ceiling,at.toISOString(),at.toISOString(),at.toISOString(),at.toISOString()));}
  for(let index=0;index<candidateStatements.length;index+=100)await db.batch(candidateStatements.slice(index,index+100));
  // A CSV import represents the complete active buyback snapshot.  Once that
  // snapshot has been materialized, remove candidates not seen in it so stale
@@ -164,9 +179,16 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
  const queueNeedsRebuild=!queueMeta||Boolean(queueMeta.dirty)||queueMeta.provider_signature!==signature;
  if(queueNeedsRebuild){
   // A dirty flag is set by the completed daily CSV import (or an explicit
-  // buyback ingest).  Only that transition rebuilds candidates from quotes.
-  if(!queueMeta||queueMeta.dirty)built=await buildDiscoveryCandidates(env.DB,at);
-  await rebuildDiscoveryQueue(env.DB,names,queueMeta,built,at);
+  // buyback ingest).  Only one Worker invocation may rebuild the projection;
+  // otherwise a manual click racing the cron repeats thousands of upserts.
+  if(!await acquireDiscoveryQueueRebuild(env.DB,at,signature))return{status:"rebuild_pending",runId:0,...built,searched:0,retailFound:0,yahooFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0,deferred:0,providers:{}};
+  try{
+   if(!queueMeta||queueMeta.dirty)built=await buildDiscoveryCandidates(env.DB,at);
+   await rebuildDiscoveryQueue(env.DB,names,queueMeta,built,at);
+  }catch(error){
+   try{await releaseDiscoveryQueueRebuild(env.DB,at,false);}catch(releaseError){console.warn("discovery queue rebuild release failed",releaseError);}
+   throw error;
+  }
  }
  const settings=await env.DB.prepare("SELECT minimum_profit_yen,sale_shipping_yen,fees_yen FROM research_settings WHERE id=1").first<{minimum_profit_yen:number;sale_shipping_yen:number;fees_yen:number}>();
  const minimumProfit=Math.max(0,Number(settings?.minimum_profit_yen??5000)),saleCosts=Math.max(0,Number(settings?.sale_shipping_yen??0)+Number(settings?.fees_yen??0));
