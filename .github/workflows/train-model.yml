@@ -1,6 +1,5 @@
 name: Train and promote model
 on:
-  schedule: [{ cron: "0 18 * * *" }]
   workflow_dispatch:
 permissions:
   contents: read

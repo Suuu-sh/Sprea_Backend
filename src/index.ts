@@ -1,3 +1,4 @@
+import {budgetDatabase,budgetStatus,BudgetPause} from "./d1-budget";
 import {MockCollector} from "./mock-collector";
 import {collectorFromEnv} from "./collectors";
 import {createBuybackQuoteOpportunities,evaluateDue,ingestListings,runPipeline} from "./pipeline";
@@ -95,8 +96,10 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
   if(!isAuthorized(request,env.ADMIN_TOKEN))return json({error:"unauthorized"},401);
   const raw=await request.json<unknown>().catch(()=>null);
   if(!raw||typeof raw!=="object")return json({error:"invalid payload"},400);
-  const body=raw as {date?:unknown;candidates?:unknown;replace?:unknown;rowsRead?:unknown;totalCandidates?:unknown;complete?:unknown;bytes?:unknown;objectKey?:unknown};
+  const body=raw as {date?:unknown;candidates?:unknown;replace?:unknown;rowsRead?:unknown;totalCandidates?:unknown;complete?:unknown;bytes?:unknown;objectKey?:unknown;offset?:unknown};
   if(typeof body.date!=="string"||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(body.date)||!Array.isArray(body.candidates)||body.candidates.length>500||(body.candidates.length===0&&body.replace!==true))return json({error:"date and 1-500 candidates are required (empty only with replace=true)"},400);
+  if(body.totalCandidates!==undefined&&(!Number.isSafeInteger(body.totalCandidates)||Number(body.totalCandidates)>5000))return json({error:"CSV projection is capped at 5000; full CSV stays in R2"},400);
+  if(body.offset!==undefined&&(!Number.isSafeInteger(body.offset)||Number(body.offset)<0||Number(body.offset)+body.candidates.length>5000))return json({error:"invalid CSV offset"},400);
   try{
    const result=await importKaitorixCsvCandidates(env.DB,body.date,body.candidates as any[],body.replace===true);
    // Do not rebuild the discovery queue for every 500-row import batch.  The
@@ -105,7 +108,7 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
    try{
     const previous=await readKaitorixCsvProgress(env,body.date);
     const batchSize=result.accepted;
-    const importedCandidates=body.replace===true?batchSize:(previous?.importedCandidates??0)+batchSize;
+    const importedCandidates=Number.isSafeInteger(body.offset)?Number(body.offset)+batchSize:body.replace===true?batchSize:(previous?.importedCandidates??0)+batchSize;
     const rowsRead=Number.isSafeInteger(body.rowsRead)?Number(body.rowsRead):previous?.rowsRead;
     const totalCandidates=Number.isSafeInteger(body.totalCandidates)?Number(body.totalCandidates):previous?.totalCandidates;
     const bytes=Number.isSafeInteger(body.bytes)?Number(body.bytes):previous?.bytes;
@@ -113,7 +116,7 @@ async function route(request:Request,env:Env,ctx?:ExecutionContext):Promise<Resp
     await writeKaitorixCsvProgress(env,{status:body.complete===true?"completed":"importing",date:body.date,objectKey,bytes,rowsRead,totalCandidates,importedCandidates,updatedAt:new Date().toISOString()});
    }catch(error){console.warn("KaitoriX CSV progress update unavailable",error);}
    return json({source:"kaitorix-csv",status:"succeeded",...result},202);
-  }catch(error){return json({error:error instanceof Error?error.message:"CSV candidate import failed"},422);}
+  }catch(error){if(error instanceof BudgetPause)throw error;return json({error:error instanceof Error?error.message:"CSV candidate import failed"},422);}
  }
  if(request.method==="POST"&&path==="/admin/discover"){const body=await request.json<{limit?:number}>().catch(()=>({} as {limit?:number}));return json(await runProductDiscovery(env,"manual",body.limit??30),202);}
  if(request.method==="GET"&&path==="/api/research/dashboard")return cachedJson(request,"sprea-dashboard",60,async()=>json(await dashboard(env.DB)),ctx);
@@ -203,4 +206,7 @@ async function runKaitorixCsv(env:Env,at=new Date()){
 const isAllowedOrigin=(origin:string,configured?:string)=>{if(!origin)return false;if(origin===configured)return true;try{const url=new URL(origin);return url.protocol==="https:"&&(url.hostname==="sprea-frontend.pages.dev"||url.hostname.endsWith(".sprea-frontend.pages.dev"));}catch{return false;}};
 const addCorsHeaders=(response:Response,cors:Record<string,string>):Response=>{if(!Object.keys(cors).length)return response;const mutable=new Response(response.body,response);for(const[k,v]of Object.entries(cors))mutable.headers.set(k,v);return mutable;};
 
-export default{async fetch(request:Request,env:Env,ctx?:ExecutionContext):Promise<Response>{const origin=request.headers.get("origin")??"",allowed=isAllowedOrigin(origin,env.ALLOWED_ORIGIN);const cors:Record<string,string>=allowed?{"access-control-allow-origin":origin,"access-control-allow-methods":"GET,POST,PUT,OPTIONS","access-control-allow-headers":"authorization,content-type","vary":"Origin"}:{};if(request.method==="OPTIONS")return new Response(null,{status:allowed?204:403,headers:cors});try{const response=await route(request,env,ctx);return addCorsHeaders(response,cors);}catch(error){console.error(error);const message=error instanceof Error?error.message:"";const quota=/(?:D1|database|rows? (?:read|written)|free tier).*(?:limit|exceed)|exceed.*(?:D1|rows? (?:read|written)|free tier)/i.test(message),writeQuota=/rows? written|write(?:s|ing)?/i.test(message);const response=json({error:quota?(writeQuota?"データベース書き込み上限に達しました。無料枠は毎日9:00（日本時間）にリセットされます。":"データ読み取り上限に達しました。無料枠は毎日9:00（日本時間）にリセットされます。"):"internal server error",code:quota?(writeQuota?"d1_daily_write_limit":"d1_daily_read_limit"):"internal_error"},quota?503:500);return addCorsHeaders(response,cors);}},async scheduled(controller:ScheduledController,env:Env){const discoveryConfigured=Boolean(env.YAHOO_CLIENT_ID||(env.RAKUTEN_APPLICATION_ID&&env.RAKUTEN_ACCESS_KEY)||(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG));if(controller.cron==="*/5 * * * *"){if(discoveryConfigured){try{await runProductDiscovery(env,"scheduled",30);}catch(error){console.error("scheduled discovery failed",error);}}return;}try{await evaluateDue(env.DB);await collectScheduled(env);}catch(error){console.error("scheduled maintenance failed",error);}}} satisfies ExportedHandler<Env>;
+export default{async fetch(request:Request,env:Env,ctx?:ExecutionContext):Promise<Response>{const origin=request.headers.get("origin")??"",allowed=isAllowedOrigin(origin,env.ALLOWED_ORIGIN);const cors:Record<string,string>=allowed?{"access-control-allow-origin":origin,"access-control-allow-methods":"GET,POST,PUT,OPTIONS","access-control-allow-headers":"authorization,content-type","vary":"Origin"}:{};if(request.method==="OPTIONS")return new Response(null,{status:allowed?204:403,headers:cors});try{
+ if(request.method==="GET"&&new URL(request.url).pathname==="/api/research/resource-budget"){if(!isAuthorized(request,env.ADMIN_TOKEN))return addCorsHeaders(json({error:"unauthorized"},401),cors);return addCorsHeaders(json(await budgetStatus(env.MODELS)),cors);}
+ const guarded=env.SPREA_ENV==="production"?{...env,DB:budgetDatabase(env.DB,env.MODELS)}:env;
+ const response=await route(request,guarded,ctx);return addCorsHeaders(response,cors);}catch(error){if(error instanceof BudgetPause)return addCorsHeaders(json({error:error.message,code:error.code,retryAt:error.retryAt},429),cors);console.error(error);const message=error instanceof Error?error.message:"";const quota=/(?:D1|database|rows? (?:read|written)|free tier).*(?:limit|exceed)|exceed.*(?:D1|rows? (?:read|written)|free tier)/i.test(message),writeQuota=/rows? written|write(?:s|ing)?/i.test(message);const response=json({error:quota?(writeQuota?"データベース書き込み上限に達しました。無料枠は毎日9:00（日本時間）にリセットされます。":"データ読み取り上限に達しました。無料枠は毎日9:00（日本時間）にリセットされます。"):"internal server error",code:quota?(writeQuota?"d1_daily_write_limit":"d1_daily_read_limit"):"internal_error"},quota?503:500);return addCorsHeaders(response,cors);}},async scheduled(controller:ScheduledController,env:Env){if(env.SPREA_ENV==="production")env={...env,DB:budgetDatabase(env.DB,env.MODELS)};const discoveryConfigured=Boolean(env.YAHOO_CLIENT_ID||(env.RAKUTEN_APPLICATION_ID&&env.RAKUTEN_ACCESS_KEY)||(env.AMAZON_CREATORS_CLIENT_ID&&env.AMAZON_CREATORS_CLIENT_SECRET&&env.AMAZON_PARTNER_TAG));if(controller.cron==="*/5 * * * *"){if(discoveryConfigured){try{await runProductDiscovery(env,"scheduled",30);}catch(error){console.error("scheduled discovery failed",error);}}return;}try{await evaluateDue(env.DB);await collectScheduled(env);}catch(error){console.error("scheduled maintenance failed",error);}}} satisfies ExportedHandler<Env>;

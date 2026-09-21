@@ -59,7 +59,14 @@ export async function importKaitorixCsvCandidates(
       source_type=excluded.source_type,product_name=excluded.product_name,jan=excluded.jan,category=excluded.category,
       condition=excluded.condition,attributes_json=excluded.attributes_json,price=excluded.price,shipping_fee=0,fee=0,
       buyback_status='accepting',fetched_at=excluded.fetched_at,last_seen_at=excluded.last_seen_at,
-      updated_at=excluded.updated_at,match_confidence=1,match_reason='jan_exact'`).bind(
+      updated_at=excluded.updated_at,match_confidence=1,match_reason='jan_exact'
+      WHERE buyback_quotes.product_name IS NOT excluded.product_name
+        OR buyback_quotes.category IS NOT excluded.category
+        OR buyback_quotes.condition IS NOT excluded.condition
+        OR buyback_quotes.attributes_json IS NOT excluded.attributes_json
+        OR buyback_quotes.price IS NOT excluded.price
+        OR buyback_quotes.buyback_status IS NOT excluded.buyback_status
+        OR buyback_quotes.fetched_at IS NOT excluded.fetched_at`).bind(
       crypto.randomUUID(), null, best.provider, "csv", externalId, candidate.productName, candidate.jan, null, null,
       candidate.category ?? null, candidate.condition, attributes, best.price, 0, 0, "accepting", null,
       best.fetchedAt, now, now, now, 1, "jan_exact",
@@ -70,7 +77,8 @@ export async function importKaitorixCsvCandidates(
       VALUES(?,?,?,?,?,?)
       ON CONFLICT(jan,provider,day) DO UPDATE SET
       latest_price=excluded.latest_price,latest_fetched_at=excluded.latest_fetched_at,updated_at=excluded.updated_at
-      WHERE excluded.latest_fetched_at >= buyback_daily_stats.latest_fetched_at`).bind(candidate.jan, best.provider, day, best.price, best.fetchedAt, now));
+      WHERE excluded.latest_fetched_at > buyback_daily_stats.latest_fetched_at
+         OR (excluded.latest_fetched_at = buyback_daily_stats.latest_fetched_at AND excluded.latest_price IS NOT buyback_daily_stats.latest_price)`).bind(candidate.jan, best.provider, day, best.price, best.fetchedAt, now));
     accepted += 1;
     storesWritten += 1;
   }
