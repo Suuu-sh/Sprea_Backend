@@ -143,7 +143,8 @@ export async function archiveKaitorixCsv(
     },
   });
   try {
-    await writeKaitorixCsvProgress(env, {
+    const previous=await readKaitorixCsvProgress(env,date);
+    if(!previous||previous.status==="archived")await writeKaitorixCsvProgress(env, {
       status: "archived",
       date,
       objectKey,

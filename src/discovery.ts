@@ -1,3 +1,4 @@
+import {BudgetPause} from "./d1-budget";
 import {normalizeAttributes,normalizeColor,normalizeModelNumber,normalizeProductName,normalizeStorage} from "./domain";
 import {ingestListings} from "./pipeline";
 import type {ListingObservation} from "./types";
@@ -17,8 +18,8 @@ const MAX_DISCOVERY_RUNTIME_MS=4*60_000;
 // A queue pass can take several days when the CSV contains thousands of
 // products.  Re-trying a no-result pair every few hours would repeatedly write
 // the same provider-state row before the rest of the queue is reached.  The
-// daily CSV import wakes only candidates whose buyback data actually changed.
-const NO_RESULT_COOLDOWN_MINUTES=14*24*60;
+// daily import preserves existing due times; successful empty searches retry daily.
+const NO_RESULT_COOLDOWN_MINUTES=24*60;
 const RETRYABLE_FAILURE_COOLDOWN_MINUTES=24*60;
 const INVALID_PROVIDER_COOLDOWN_MINUTES=7*24*60;
 // Workers on the free plan have a small per-invocation subrequest budget. A
@@ -108,56 +109,52 @@ async function releaseDiscoveryQueueRebuild(db:D1Database,lock:DiscoveryRebuildL
  * instead of cross joining every candidate with every provider.
  */
 async function rebuildDiscoveryQueue(db:D1Database,providers:string[],meta:DiscoveryQueueMeta|null,counts:{quotes:number; candidates:number; canonical:number},at:Date):Promise<DiscoveryQueueMeta>{
- const now=at.toISOString(),signature=queueProviderSignature(providers),reset=Boolean(meta?.reset_requested??1);
+ const now=at.toISOString(),signature=queueProviderSignature(providers);
+ // Keep each write batch bounded, and never reset existing attempts on a
+ // daily import. New candidates join the queue; existing due times survive.
+ const ids=(await db.prepare("SELECT id,best_buyback_price_yen FROM product_discovery_candidates WHERE resolver_status IN ('searchable','retail_found')").all<{id:number;best_buyback_price_yen:number}>()).results;
  for(const provider of providers){
-  const statement=reset
-   ? `INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen)
-      SELECT id,?,'pending',0,0,NULL,?,'',?,best_buyback_price_yen FROM product_discovery_candidates
-      WHERE resolver_status IN ('searchable','retail_found')
-      ON CONFLICT(candidate_id,provider) DO UPDATE SET status='pending',next_search_at=excluded.next_search_at,last_error='',updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen`
-   : `INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen)
-      SELECT id,?,'pending',0,0,NULL,?,'',?,best_buyback_price_yen FROM product_discovery_candidates
-      WHERE resolver_status IN ('searchable','retail_found')
-      ON CONFLICT(candidate_id,provider) DO NOTHING`;
-  await db.prepare(statement).bind(provider,now,now).run();
-  // A completed CSV import does not reset every provider row.  Wake only
-  // candidates whose candidate projection changed in this rebuild; otherwise
-  // a daily import would rewrite the entire candidate x provider queue.
-  if(!reset)await db.prepare(`UPDATE product_discovery_provider_state
-    SET status='pending',next_search_at=?,last_error='',updated_at=?
-    WHERE provider=? AND candidate_id IN (SELECT id FROM product_discovery_candidates WHERE updated_at=?)
-      AND (status<>'pending' OR next_search_at>? OR last_error<>'')`).bind(now,now,provider,now,now).run();
+  const existing=new Set((await db.prepare("SELECT candidate_id FROM product_discovery_provider_state WHERE provider=?").bind(provider).all<{candidate_id:number}>()).results.map(row=>row.candidate_id));
+  const statements=ids.filter(row=>!existing.has(row.id)).map(row=>db.prepare(`INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen)
+   VALUES(?,?,'pending',0,0,NULL,?,'',?,?) ON CONFLICT(candidate_id,provider) DO NOTHING`).bind(row.id,provider,now,now,row.best_buyback_price_yen));
+  for(let i=0;i<statements.length;i+=100)await db.batch(statements.slice(i,i+100));
  }
  const generation=Number(meta?.generation??0)+1;
  await db.prepare(`UPDATE product_discovery_queue_meta SET dirty=0,reset_requested=0,provider_signature=?,generation=?,quote_count=?,candidate_count=?,canonical_count=?,rebuilt_at=?,updated_at=? WHERE id=1`).bind(signature,generation,counts.quotes,counts.candidates,counts.canonical,now,now).run();
  return{dirty:0,reset_requested:0,provider_signature:signature,generation,quote_count:counts.quotes,candidate_count:counts.candidates,canonical_count:counts.canonical,rebuilt_at:now};
 }
 
+function stableCandidateAttributes(json:string):string{
+ const value=JSON.parse(json||'{}');
+ if(value.source!=='kaitorix-csv')return json;
+ delete value.snapshotDate;
+ if(Array.isArray(value.stores))value.stores=value.stores.map(({provider,price}:{provider:string;price:number})=>({provider,price}));
+ return JSON.stringify(value);
+}
+
 export async function buildDiscoveryCandidates(db:D1Database,at=new Date()):Promise<{quotes:number;candidates:number;canonical:number}>{
  const snapshotDate=jstDate(at),currentCsvRows=(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes WHERE source_type='csv' AND json_extract(attributes_json,'$.snapshotDate')=?) SELECT provider,source_type,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused','unknown') AND price>0`).bind(snapshotDate).all<QuoteRow>()).results;
- const snapshotSeenAt=currentCsvRows.length?`${snapshotDate}T00:00:00.000Z`:at.toISOString();
+ const snapshotSeenAt=at.toISOString();
  // A complete CSV snapshot is the buyback source of truth.  Read only that
  // snapshot when it exists; do not delete the old rows here because deleting a
  // large pre-CSV history on every daily rebuild consumes the D1 write quota.
  // The one-time retention migration handles old history separately.
- const rows=currentCsvRows.length?currentCsvRows:(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes) SELECT provider,source_type,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused','unknown') AND price>0`).all<QuoteRow>()).results;
+ const hasCsv=await db.prepare("SELECT id FROM buyback_quotes WHERE source_type='csv' LIMIT 1").first();
+ const rows=currentCsvRows.length?currentCsvRows:hasCsv?[]:(await db.prepare(`WITH latest AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY provider,COALESCE(external_id,id) ORDER BY fetched_at DESC,id DESC) rank FROM buyback_quotes) SELECT provider,source_type,product_name,jan,model_number,brand,category,condition,attributes_json,price,fetched_at FROM latest WHERE rank=1 AND buyback_status='accepting' AND condition IN ('new','unused','unknown') AND price>0`).all<QuoteRow>()).results;
  const activeRows=rows;
  const groups=new Map<string,QuoteRow[]>();for(const row of activeRows){const key=candidateIdentity(row),items=groups.get(key)??[];items.push(row);groups.set(key,items);}
  const aliases=(await db.prepare("SELECT alias_type,alias_value,condition,canonical_product_id FROM canonical_product_aliases WHERE alias_type IN ('gtin','mpn')").all<any>()).results,aliasMap=new Map(aliases.map(row=>[`${row.alias_type}:${row.alias_value}:${row.condition}`,Number(row.canonical_product_id)]));
  const missing:[string,QuoteRow,string,string][]=[];for(const[identity,items]of groups){const best=[...items].sort((a,b)=>b.price-a.price)[0],jan=validJan(best.jan),model=normalizeModelNumber(best.model_number),aliasType=jan?"gtin":"mpn",aliasValue=jan??`${model}:`;if((jan||model)&&!aliasMap.has(`${aliasType}:${aliasValue}:${best.condition}`))missing.push([identity,best,aliasType,aliasValue]);}
- if(missing.length)await db.batch(missing.map(([,row,,])=>{const jan=validJan(row.jan),model=normalizeModelNumber(row.model_number),key=jan?`gtin:${jan}:${row.condition}`:`mpn:${model}::${row.condition}`;return db.prepare(`INSERT INTO canonical_products(canonical_key,gtin,manufacturer_part_number,brand,model,variant,category,capacity,color,condition,title,created_at,updated_at) VALUES(?,?,?,?,?,'',?,'','',?,?,?,?) ON CONFLICT(canonical_key) DO NOTHING`).bind(key,jan,row.model_number,row.brand??"",row.product_name,row.category??"",row.condition,row.product_name,at.toISOString(),at.toISOString());}));
+ if(missing.length){const inserts=missing.map(([,row,,])=>{const jan=validJan(row.jan),model=normalizeModelNumber(row.model_number),key=jan?`gtin:${jan}:${row.condition}`:`mpn:${model}::${row.condition}`;return db.prepare(`INSERT INTO canonical_products(canonical_key,gtin,manufacturer_part_number,brand,model,variant,category,capacity,color,condition,title,created_at,updated_at) VALUES(?,?,?,?,?,'',?,'','',?,?,?,?) ON CONFLICT(canonical_key) DO NOTHING`).bind(key,jan,row.model_number,row.brand??"",row.product_name,row.category??"",row.condition,row.product_name,at.toISOString(),at.toISOString());});for(let i=0;i<inserts.length;i+=100)await db.batch(inserts.slice(i,i+100));}
  const products=(await db.prepare("SELECT id,canonical_key FROM canonical_products").all<any>()).results,productByKey=new Map(products.map(row=>[String(row.canonical_key),Number(row.id)])),aliasStatements:D1PreparedStatement[]=[];
  for(const[,row,aliasType,aliasValue]of missing){const jan=validJan(row.jan),model=normalizeModelNumber(row.model_number),key=jan?`gtin:${jan}:${row.condition}`:`mpn:${model}::${row.condition}`,productId=productByKey.get(key);if(productId){aliasMap.set(`${aliasType}:${aliasValue}:${row.condition}`,productId);aliasStatements.push(db.prepare("INSERT OR IGNORE INTO canonical_product_aliases(alias_type,alias_value,condition,canonical_product_id,created_at) VALUES(?,?,?,?,?)").bind(aliasType,aliasValue,row.condition,productId,at.toISOString()));}}
- if(aliasStatements.length)await db.batch(aliasStatements);
+ for(let i=0;i<aliasStatements.length;i+=100)await db.batch(aliasStatements.slice(i,i+100));
  const config=await db.prepare("SELECT minimum_profit_yen,sale_shipping_yen,fees_yen FROM research_settings WHERE id=1").first<any>(),candidateStatements:D1PreparedStatement[]=[];let canonical=0;
- for(const[identity,items]of groups){const best=[...items].sort((a,b)=>b.price-a.price)[0],jan=validJan(best.jan),model=normalizeModelNumber(best.model_number),aliasType=jan?"gtin":"mpn",aliasValue=jan??`${model}:`,productId=(jan||model)?aliasMap.get(`${aliasType}:${aliasValue}:${best.condition}`)??null:null;if(productId)canonical++;const providers=new Set(items.map(x=>x.provider)),providerCount=Math.max(providers.size,...items.map(csvStoreCount)),targets=purchaseTargets(best.price,config.minimum_profit_yen,config.sale_shipping_yen+config.fees_yen),query=discoveryQuery(best);candidateStatements.push(db.prepare(`INSERT INTO product_discovery_candidates(identity_key,canonical_product_id,jan,model_number,product_name,brand,category,condition,attributes_json,best_buyback_price_yen,best_buyback_provider,buyback_provider_count,resolver_status,resolver_confidence,resolver_reason,search_query,target_purchase_price_yen,discovery_ceiling_yen,next_search_at,first_seen_at,last_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET canonical_product_id=excluded.canonical_product_id,product_name=excluded.product_name,brand=excluded.brand,category=excluded.category,condition=excluded.condition,attributes_json=excluded.attributes_json,best_buyback_price_yen=excluded.best_buyback_price_yen,best_buyback_provider=excluded.best_buyback_provider,buyback_provider_count=excluded.buyback_provider_count,resolver_status=CASE WHEN product_discovery_candidates.resolver_status='retail_found' THEN 'retail_found' ELSE excluded.resolver_status END,resolver_confidence=excluded.resolver_confidence,resolver_reason=excluded.resolver_reason,search_query=excluded.search_query,target_purchase_price_yen=excluded.target_purchase_price_yen,discovery_ceiling_yen=excluded.discovery_ceiling_yen,last_seen_at=excluded.last_seen_at,updated_at=excluded.updated_at WHERE product_discovery_candidates.canonical_product_id IS NOT excluded.canonical_product_id OR product_discovery_candidates.product_name IS NOT excluded.product_name OR product_discovery_candidates.brand IS NOT excluded.brand OR product_discovery_candidates.category IS NOT excluded.category OR product_discovery_candidates.condition IS NOT excluded.condition OR product_discovery_candidates.attributes_json IS NOT excluded.attributes_json OR product_discovery_candidates.best_buyback_price_yen IS NOT excluded.best_buyback_price_yen OR product_discovery_candidates.best_buyback_provider IS NOT excluded.best_buyback_provider OR product_discovery_candidates.buyback_provider_count IS NOT excluded.buyback_provider_count OR product_discovery_candidates.search_query IS NOT excluded.search_query OR product_discovery_candidates.target_purchase_price_yen IS NOT excluded.target_purchase_price_yen OR product_discovery_candidates.discovery_ceiling_yen IS NOT excluded.discovery_ceiling_yen OR product_discovery_candidates.last_seen_at IS NOT excluded.last_seen_at`).bind(identity,productId,best.jan,best.model_number,best.product_name,best.brand,best.category,best.condition,best.attributes_json,best.price,best.provider,providerCount,productId?"searchable":"unresolved",productId?(jan?1:.99):0,productId?(jan?"jan_exact":"model_exact"):"identity_insufficient",query,targets.target,targets.ceiling,at.toISOString(),at.toISOString(),snapshotSeenAt,at.toISOString()));}
+ for(const[identity,items]of groups){const best=[...items].sort((a,b)=>b.price-a.price)[0],jan=validJan(best.jan),model=normalizeModelNumber(best.model_number),aliasType=jan?"gtin":"mpn",aliasValue=jan??`${model}:`,productId=(jan||model)?aliasMap.get(`${aliasType}:${aliasValue}:${best.condition}`)??null:null;if(productId)canonical++;const providers=new Set(items.map(x=>x.provider)),providerCount=Math.max(providers.size,...items.map(csvStoreCount)),targets=purchaseTargets(best.price,config.minimum_profit_yen,config.sale_shipping_yen+config.fees_yen),query=discoveryQuery(best);candidateStatements.push(db.prepare(`INSERT INTO product_discovery_candidates(identity_key,canonical_product_id,jan,model_number,product_name,brand,category,condition,attributes_json,best_buyback_price_yen,best_buyback_provider,buyback_provider_count,resolver_status,resolver_confidence,resolver_reason,search_query,target_purchase_price_yen,discovery_ceiling_yen,next_search_at,first_seen_at,last_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET canonical_product_id=excluded.canonical_product_id,product_name=excluded.product_name,brand=excluded.brand,category=excluded.category,condition=excluded.condition,attributes_json=excluded.attributes_json,best_buyback_price_yen=excluded.best_buyback_price_yen,best_buyback_provider=excluded.best_buyback_provider,buyback_provider_count=excluded.buyback_provider_count,resolver_status=CASE WHEN product_discovery_candidates.resolver_status='retail_found' THEN 'retail_found' ELSE excluded.resolver_status END,resolver_confidence=excluded.resolver_confidence,resolver_reason=excluded.resolver_reason,search_query=excluded.search_query,target_purchase_price_yen=excluded.target_purchase_price_yen,discovery_ceiling_yen=excluded.discovery_ceiling_yen,last_seen_at=excluded.last_seen_at,updated_at=excluded.updated_at WHERE product_discovery_candidates.canonical_product_id IS NOT excluded.canonical_product_id OR product_discovery_candidates.product_name IS NOT excluded.product_name OR product_discovery_candidates.brand IS NOT excluded.brand OR product_discovery_candidates.category IS NOT excluded.category OR product_discovery_candidates.condition IS NOT excluded.condition OR product_discovery_candidates.attributes_json IS NOT excluded.attributes_json OR product_discovery_candidates.best_buyback_price_yen IS NOT excluded.best_buyback_price_yen OR product_discovery_candidates.best_buyback_provider IS NOT excluded.best_buyback_provider OR product_discovery_candidates.buyback_provider_count IS NOT excluded.buyback_provider_count OR product_discovery_candidates.search_query IS NOT excluded.search_query OR product_discovery_candidates.target_purchase_price_yen IS NOT excluded.target_purchase_price_yen OR product_discovery_candidates.discovery_ceiling_yen IS NOT excluded.discovery_ceiling_yen`).bind(identity,productId,best.jan,best.model_number,best.product_name,best.brand,best.category,best.condition,stableCandidateAttributes(best.attributes_json),best.price,best.provider,providerCount,productId?"searchable":"unresolved",productId?(jan?1:.99):0,productId?(jan?"jan_exact":"model_exact"):"identity_insufficient",query,targets.target,targets.ceiling,at.toISOString(),at.toISOString(),snapshotSeenAt,at.toISOString()));}
  for(let index=0;index<candidateStatements.length;index+=100)await db.batch(candidateStatements.slice(index,index+100));
- // A CSV import represents the complete active buyback snapshot.  Once that
- // snapshot has been materialized, remove candidates not seen in it so stale
- // products do not remain in the provider queue forever.  The delete is done
- // once per daily rebuild (not on every five-minute tick) and cascades only
- // discovery telemetry; canonical products and Paper Trading history remain.
- if(rows.some(row=>row.source_type==="csv"))await db.prepare("DELETE FROM product_discovery_candidates WHERE last_seen_at < ?").bind(snapshotSeenAt).run();
+ // Preserve telemetry and IDs on daily imports; never cascade-delete them.
+ // Do not cascade-delete candidates or their search history during imports.
+ // Expired CSV candidates are excluded at queue selection instead.
  return{quotes:activeRows.length,candidates:groups.size,canonical};
 }
 async function yahoo(candidate:Candidate,clientId:string,at:Date,fetcher:typeof fetch=fetch):Promise<ListingObservation[]>{const url=new URL("https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch");url.searchParams.set("appid",clientId);url.searchParams.set("query",candidate.search_query);url.searchParams.set("results","20");url.searchParams.set("condition","new");url.searchParams.set("in_stock","true");url.searchParams.set("sort","+price");const response=await fetchWithTimeout(url,{headers:{accept:"application/json","user-agent":"SpreaResearch/1.0"}},fetcher);if(!response.ok){const detail=await responseErrorDetail(response);throw new Error(`Yahoo discovery failed (${response.status})${detail?`: ${detail}`:""}`);}const payload=await response.json() as{hits?:Hit[]},results:ListingObservation[]=[];for(const hit of payload.hits??[]){const title=typeof hit.name==="string"?hit.name:"",jan=typeof hit.janCode==="string"?hit.janCode:null,price=Number(hit.price),externalId=typeof hit.code==="string"?hit.code:"",productUrl=typeof hit.url==="string"?hit.url:"";if(!retailIdentityMatches(candidate,title,jan)||!Number.isSafeInteger(price)||price<=0||!externalId||!productUrl||hit.condition!=="new"||hit.inStock!==true||Number(hit.shipping?.code)!==2)continue;results.push({source:"yahoo-discovery",externalId,side:"purchase",title,url:productUrl,gtin:candidate.jan??undefined,manufacturerPartNumber:candidate.model_number??undefined,brand:candidate.brand??undefined,model:candidate.product_name,category:candidate.category??undefined,condition:"new",priceYen:price,shippingYen:0,feeYen:0,rewardYen:0,stock:1,stockStatus:"in_stock",purchasable:true,capturedAt:at.toISOString(),raw:hit});}return results.sort((a,b)=>a.priceYen-b.priceYen).slice(0,10);}
@@ -187,7 +184,7 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
  const active=await env.DB.prepare("SELECT id FROM product_discovery_runs WHERE status='running' AND started_at>=? ORDER BY id DESC LIMIT 1").bind(new Date(at.getTime()-10*60_000).toISOString()).first<{id:number}>();
  if(active)return{status:"busy",runId:Number(active.id),searched:0,retailFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0};
  if(trigger==="manual"){
-  const recent=await env.DB.prepare("SELECT id,status FROM product_discovery_runs WHERE started_at>=? ORDER BY id DESC LIMIT 1").bind(new Date(at.getTime()-5*60_000).toISOString()).first<{id:number;status:string}>();
+  const recent=await env.DB.prepare("SELECT id,status FROM product_discovery_runs WHERE id=(SELECT MAX(id) FROM product_discovery_runs) AND started_at>=?").bind(new Date(at.getTime()-5*60_000).toISOString()).first<{id:number;status:string}>();
   if(recent)return{status:"cooldown",runId:Number(recent.id),searched:0,retailFound:0,purchasable:0,profitable:0,threshold:0,buys:0,failures:0};
  }
  await env.DB.prepare("UPDATE product_discovery_runs SET status='failed',message='interrupted before completion',finished_at=? WHERE status='running' AND started_at<?").bind(at.toISOString(),new Date(at.getTime()-10*60_000).toISOString()).run();
@@ -226,6 +223,7 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
   JOIN product_discovery_candidates c ON c.id=s.candidate_id
  WHERE s.provider=?
     AND s.next_search_at<=?
+
   ORDER BY s.next_search_at,s.queue_priority_yen DESC,s.candidate_id
   LIMIT ?`).bind(provider,at.toISOString(),perProviderLimit).all<Candidate&{provider:string}>()));
  const pairs=providerRows.flatMap(result=>result.results).slice(0,pairLimit);
@@ -242,6 +240,13 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
  };
  for(const pair of pairs){
   if(Date.now()>=deadline)break;
+  const attributes=JSON.parse(pair.attributes_json||'{}');
+  const freshCsv=attributes.source==='kaitorix-csv'?await env.DB.prepare("SELECT price,attributes_json FROM buyback_quotes INDEXED BY buyback_quotes_jan_idx WHERE jan=? AND jan IS NOT NULL AND jan<>'' AND source_type='csv' AND json_extract(attributes_json,'$.snapshotDate')=? ORDER BY price DESC LIMIT 1").bind(pair.jan,jstDate(at)).first<{price:number;attributes_json:string}>():null;
+  if(attributes.source==='kaitorix-csv'&&!freshCsv){
+   await env.DB.prepare("UPDATE product_discovery_provider_state SET next_search_at=? WHERE candidate_id=? AND provider=?").bind(new Date(at.getTime()+14*86400000).toISOString(),pair.id,pair.provider).run();
+   continue;
+  }
+  if(freshCsv)pair.best_buyback_price_yen=freshCsv.price;
   searchedCandidates.add(pair.id);const stats=providerStats[pair.provider],search=providers.get(pair.provider)!;stats.searched++;
   try{
    await waitForProvider(pair.provider);
@@ -255,7 +260,7 @@ export async function runProductDiscovery(env:DiscoveryEnv,trigger="manual",limi
    if(confirmed.length){const summary=await ingestListings(env.DB,confirmed,at,{evaluate:false});buys+=summary.buys;await env.DB.prepare("UPDATE product_discovery_candidates SET resolver_status='retail_found',updated_at=? WHERE id=?").bind(at.toISOString(),pair.id).run();}
    const nextSearchMinutes=confirmed.length?24*60:NO_RESULT_COOLDOWN_MINUTES;
    await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen) VALUES(?,?, 'succeeded',1,0,?,?,?, ?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error='',updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+nextSearchMinutes*60_000).toISOString(),"",at.toISOString(),pair.best_buyback_price_yen).run();
-  }catch(error){failures++;stats.failures++;const message=error instanceof Error?error.message.slice(0,500):"search failed";providerErrors[pair.provider]=message;const cooldownMinutes=/\((?:400|401|403)\)/.test(message)?INVALID_PROVIDER_COOLDOWN_MINUTES:/\(429\)/.test(message)?6*60:RETRYABLE_FAILURE_COOLDOWN_MINUTES;await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen) VALUES(?,?, 'failed',1,1,?,?,?, ?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,failure_count=product_discovery_provider_state.failure_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error=excluded.last_error,updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+cooldownMinutes*60_000).toISOString(),message,at.toISOString(),pair.best_buyback_price_yen).run();}
+  }catch(error){failures++;stats.failures++;const message=error instanceof Error?error.message.slice(0,500):"search failed";if(error instanceof BudgetPause)throw error;providerErrors[pair.provider]=message;const cooldownMinutes=/\((?:400|401|403)\)/.test(message)?INVALID_PROVIDER_COOLDOWN_MINUTES:/\(429\)/.test(message)?6*60:RETRYABLE_FAILURE_COOLDOWN_MINUTES;await env.DB.prepare("INSERT INTO product_discovery_provider_state(candidate_id,provider,status,attempt_count,failure_count,last_searched_at,next_search_at,last_error,updated_at,queue_priority_yen) VALUES(?,?, 'failed',1,1,?,?,?, ?,?) ON CONFLICT(candidate_id,provider) DO UPDATE SET status=excluded.status,attempt_count=product_discovery_provider_state.attempt_count+1,failure_count=product_discovery_provider_state.failure_count+1,last_searched_at=excluded.last_searched_at,next_search_at=excluded.next_search_at,last_error=excluded.last_error,updated_at=excluded.updated_at,queue_priority_yen=excluded.queue_priority_yen").bind(pair.id,pair.provider,at.toISOString(),new Date(at.getTime()+cooldownMinutes*60_000).toISOString(),message,at.toISOString(),pair.best_buyback_price_yen).run();}
  }
  for(const[name,stats]of Object.entries(providerStats))await env.DB.prepare("INSERT INTO product_discovery_provider_runs(run_id,provider,searched_count,found_count,listing_count,profitable_count,threshold_count,failure_count) VALUES(?,?,?,?,?,?,?,?)").bind(runId,name,stats.searched,stats.found,stats.listings,stats.profitable,stats.threshold,stats.failures).run();
  const searchedPairs=Object.values(providerStats).reduce((total,stats)=>total+stats.searched,0);

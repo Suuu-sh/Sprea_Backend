@@ -77,8 +77,8 @@ export async function importKaitorixCsvCandidates(
       VALUES(?,?,?,?,?,?)
       ON CONFLICT(jan,provider,day) DO UPDATE SET
       latest_price=excluded.latest_price,latest_fetched_at=excluded.latest_fetched_at,updated_at=excluded.updated_at
-      WHERE excluded.latest_price IS NOT buyback_daily_stats.latest_price
-         OR excluded.latest_fetched_at > buyback_daily_stats.latest_fetched_at`).bind(candidate.jan, best.provider, day, best.price, best.fetchedAt, now));
+      WHERE excluded.latest_fetched_at > buyback_daily_stats.latest_fetched_at
+         OR (excluded.latest_fetched_at = buyback_daily_stats.latest_fetched_at AND excluded.latest_price IS NOT buyback_daily_stats.latest_price)`).bind(candidate.jan, best.provider, day, best.price, best.fetchedAt, now));
     accepted += 1;
     storesWritten += 1;
   }

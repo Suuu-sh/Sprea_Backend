@@ -6,7 +6,7 @@ const workerUrl = (process.env.SPREA_WORKER_URL ?? "https://sprea-research.suuu-
 const baseUrl = "https://kaitorix.app";
 const minProductPriceYen = Math.max(0, Number(process.env.KAITORIX_MIN_PRODUCT_PRICE_YEN ?? 5_000));
 const maxStoresPerProduct = Math.max(1, Math.min(5, Number(process.env.KAITORIX_MAX_STORES_PER_PRODUCT ?? 2)));
-const maxCandidates = Math.max(1, Number(process.env.KAITORIX_MAX_CANDIDATES ?? 5_000));
+const maxCandidates = Math.max(1, Math.min(5000, Number(process.env.KAITORIX_MAX_CANDIDATES ?? 5_000)));
 
 if (!apiKey) throw new Error("KAITORIX_API_KEY is not configured");
 if (!adminToken) throw new Error("SPREA_ADMIN_TOKEN is not configured");
@@ -135,6 +135,13 @@ if (!download) throw new Error("KaitoriX CSV download returned no response");
 const bytes = new Uint8Array(await download.arrayBuffer());
 if (bytes.length < 2 || bytes[0] !== 0x1f || bytes[1] !== 0x8b) throw new Error("KaitoriX CSV download was not gzip data");
 const date = /^\d{4}-\d{2}-\d{2}$/.test(status.today ?? "") ? status.today : new Intl.DateTimeFormat("en-CA", {timeZone: "Asia/Tokyo"}).format(new Date());
+const previousResponse=await fetch(`${workerUrl}/api/kaitorix/csv/status`);
+await requireOk(previousResponse,"Sprea CSV resume status");
+const previous=await previousResponse.json();
+if(previous.progress?.date===date&&previous.progress?.status==="completed"){
+ console.log(JSON.stringify({date,status:"already_completed"}));process.exit(0);
+}
+const resumeOffset=previous.progress?.date===date?Number(previous.progress.importedCandidates??0):0;
 const upload = await fetch(`${workerUrl}/admin/kaitorix-csv/upload`, {
   method: "POST",
   headers: {
@@ -148,14 +155,15 @@ const upload = await fetch(`${workerUrl}/admin/kaitorix-csv/upload`, {
 await requireOk(upload, "Sprea CSV archive upload");
 const result = await upload.json();
 const extracted = extractCandidates(gunzipSync(bytes).toString("utf8"));
-let imported = 0;
-for (let index = 0; index < extracted.candidates.length || (index === 0 && extracted.candidates.length === 0); index += 500) {
+let imported = resumeOffset;
+for (let index = resumeOffset; index < extracted.candidates.length || (index === 0 && extracted.candidates.length === 0); index += 500) {
   const batch = extracted.candidates.slice(index, index + 500);
   const response = await fetch(`${workerUrl}/admin/kaitorix-csv/import-candidates`, {
     method: "POST",
     headers: {authorization: `Bearer ${adminToken}`, "content-type": "application/json"},
     body: JSON.stringify({
       date,
+      offset:index,
       candidates: batch,
       replace: index === 0,
       rowsRead: extracted.rowsRead,
